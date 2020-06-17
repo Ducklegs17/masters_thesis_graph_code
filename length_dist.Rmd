@@ -1,0 +1,1328 @@
+---
+title: "length_distribution"
+author: "Chelsea Matthews"
+date: "30 April 2020"
+output: 
+  html_document:
+      code_folding: "show"
+      number_sections: TRUE
+      toc: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+											results = "asis",
+											message = FALSE, warning = FALSE,
+											error = FALSE)
+```
+
+
+```{r}
+library(plyr)
+library(tidyverse)
+library(ggplot2)
+library(grImport)
+library(XML)
+library(kableExtra)
+library(cluster)
+library(purrr)
+library(data.table)
+library(ggpubr)
+library(scales)
+library(viridis)
+library(dplyr)
+library(cowplot) 
+library(egg) 
+library(ggnewscale)
+```
+
+
+# Introduction
+This Rmd document contains the code used for creation of all images based on length distribution files.
+
+# Read length distribution of input data
+
+```{r}
+#Function to make graph legend smaller
+addSmallLegend <- function(myPlot, pointSize = 4, textSize = 6, spaceLegend = 0.7) {
+    myPlot +
+        guides(shape = guide_legend(override.aes = list(size = pointSize)),
+               color = guide_legend(override.aes = list(size = pointSize))) +
+        theme(legend.title = element_text(size = textSize), 
+              legend.text  = element_text(size = textSize),
+              legend.key.size = unit(spaceLegend, "lines"))
+}
+
+# Apply on original plot
+
+length_dist_files <- dir("./length_distribution/raw_lengths", recursive=TRUE, full.names=TRUE, pattern=".txt$")
+```
+
+
+```{r}
+#define colours
+brightPurple <- "#65587F"
+darkPurple <- "#463d58"
+brightOrange <- "#F18867"
+darkOrange <- "#A85F48"
+brightGreen <- "#50BDA1"
+darkGreen <- "#388470"
+otherGreen <- "green4"
+darkotherGreen <- "darkgreen"
+
+```
+
+====================================================================================
+# Graphing length of assembly contigs.
+====================================================================================
+
+## HiFi - Read in data
+
+```{r}
+cum_length_files <- dir("../pacbio_hifi/length", recursive=TRUE, full.names=TRUE, pattern=".txt$")
+
+testlength <- function(myfile){
+  temp <- read.table(myfile, header = TRUE, stringsAsFactors = FALSE)
+  temp <- as.data.frame(temp[,ncol(temp)])
+  return(temp)
+}
+
+tempList <- lapply(cum_length_files,testlength)
+hifi_contig_length <- rbindlist(tempList, idcol = "index")
+
+newCols <- c("read_type", 
+             "assembly_type", 
+             "assembly_tool", 
+             "read_selection", 
+             "dataset", 
+             "bbduk_cov", 
+             "bbduk_kmer", 
+             "depth")
+
+hifi_contig_length[,newCols] <- NA
+hifi_contig_length$read_selection <- as.character(hifi_contig_length$read_selection)
+
+for( i in 1:length(cum_length_files)) {
+  temp <- unlist(cum_length_files[i], "/")
+  temp <- unlist(strsplit(temp, "_"))
+  temp <- unlist(strsplit(temp, "\\."))
+  temp <- unlist(strsplit(temp, "/"))
+  hifi_contig_length$read_type[hifi_contig_length$index == i] <- temp[3]
+  hifi_contig_length$assembly_type[hifi_contig_length$index == i] <- temp[5]
+  hifi_contig_length$assembly_tool[hifi_contig_length$index == i] <- temp[6]
+  hifi_contig_length$read_selection[hifi_contig_length$index == i] <- temp[8]
+  hifi_contig_length$readset[hifi_contig_length$index == i] <- temp[7]
+  hifi_contig_length$bbduk_cov[hifi_contig_length$index == i] <- temp[9]
+  hifi_contig_length$bbduk_kmer[hifi_contig_length$index == i] <- paste0("0.",temp[11])
+  hifi_contig_length$depth[hifi_contig_length$index == i] <- temp[12]
+}
+
+names(hifi_contig_length)[2] <- "contig_length"
+#hifi_contig_length$depth[hifi_contig_length$depth==50] <- 46
+
+hifi_contig_length <- hifi_contig_length[
+  with(hifi_contig_length, order(index, -contig_length)),]
+
+hifi_contig_length <- hifi_contig_length %>%
+  group_by(index) %>%
+  mutate(cum_length = cumsum(contig_length))
+
+hifi_contig_length <- hifi_contig_length %>%
+  group_by(index) %>%
+  mutate(coverage = cum_length/(max(hifi_contig_length$cum_length)))
+
+hifi_contig_length <- hifi_contig_length %>% group_by(index) %>% mutate(id = row_number())
+
+hifi_contig_length$readset <- str_replace(hifi_contig_length$readset, "rice24kb", "24kb")
+hifi_contig_length$readset <- str_replace(hifi_contig_length$readset, "SRR99694", "11kb")
+
+#CLR Reading in
+
+cum_length_files <- dir("../pacbio_clr/length", recursive=TRUE, full.names=TRUE, pattern=".txt$")
+
+testlength <- function(myfile){
+  temp <- read.table(myfile, header = TRUE, stringsAsFactors = FALSE)
+  temp <- as.data.frame(temp[,ncol(temp)])
+  return(temp)
+}
+
+tempList <- lapply(cum_length_files,testlength)
+clr_contig_length <- rbindlist(tempList, idcol = "index")
+
+newCols <- c("read_type", 
+             "assembly_type", 
+             "assembly_tool", 
+             "read_selection", 
+             "dataset", 
+             "bbduk_cov", 
+             "bbduk_kmer", 
+             "depth")
+
+clr_contig_length[,newCols] <- NA
+clr_contig_length$read_selection <- as.character(clr_contig_length$read_selection)
+
+for( i in 1:length(cum_length_files)) {
+  temp <- unlist(cum_length_files[i], "/")
+  temp <- unlist(strsplit(temp, "_"))
+  temp <- unlist(strsplit(temp, "\\."))
+  temp <- unlist(strsplit(temp, "/"))
+  clr_contig_length$read_type[clr_contig_length$index == i] <- temp[3]
+  clr_contig_length$assembly_type[clr_contig_length$index == i] <- temp[5]
+  clr_contig_length$assembly_tool[clr_contig_length$index == i] <- temp[6]
+  clr_contig_length$read_selection[clr_contig_length$index == i] <- temp[10]
+  clr_contig_length$readset[clr_contig_length$index == i] <- temp[7]
+  clr_contig_length$bbduk_cov[clr_contig_length$index == i] <- temp[11]
+  clr_contig_length$bbduk_kmer[clr_contig_length$index == i] <- paste0("0.",temp[13])
+  clr_contig_length$depth[clr_contig_length$index == i] <- temp[14]
+}
+
+names(clr_contig_length)[2] <- "contig_length"
+#clr_contig_length$depth[clr_contig_length$depth==50] <- 46
+
+clr_contig_length <- clr_contig_length[
+  with(clr_contig_length, order(index, -contig_length)),]
+
+clr_contig_length <- clr_contig_length %>%
+  group_by(index) %>%
+  mutate(cum_length = cumsum(contig_length))
+
+clr_contig_length <- clr_contig_length %>%
+  group_by(index) %>%
+  mutate(coverage = cum_length/(max(clr_contig_length$cum_length)))
+
+clr_contig_length <- clr_contig_length %>% group_by(index) %>% mutate(id = row_number())
+
+clr_contig_length$readset <- clr_contig_length$readset <- "30kb"
+
+```
+
+#Comparison of 24kb and 11kb data
+
+```{r}
+
+purpleColors <- c("#d0ccd8","#b2abbf","#938aa5","#74688b","#5a4f72","#463d58")
+names(purpleColors) <- c("10","15","25","35","50","60")
+
+greenColors <- c("#96d7c6","#72cab3","#50bda1","#409780","#307160")
+names(greenColors) <- c("10","15","25","35","50")
+
+hifi_contig_length$depth <- as.factor(hifi_contig_length$depth)
+
+#colScale <- scale_colour_manual(name = "colourFactor",values = myColors)
+
+# Create the plots
+reverselog_trans <- function(base = exp(1)) {
+  trans <- function(x) -log(x, base)
+  inv <- function(x) base^(-x)
+  trans_new(paste0("reverselog-", format(base)), trans, inv, 
+            log_breaks(base=base, n=10),
+            domain = c(1e-100, Inf))
+}
+
+dat <- subset(hifi_contig_length, assembly_tool == "hifiasm") %>%
+  subset(read_selection == "random")
+dat1 <- subset(dat, readset == "24kb")
+dat2 <- subset(dat, readset == "11kb")
+
+
+hifiasm_random <- ggplot(dat1, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(aes(color=depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "Cumulative Length",
+    x = "Contig Length (bp)"
+  ) +
+  geom_hline(yintercept=387500000, linetype="dashed") + 
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())+
+#scale_colour_gradient(high = "#463d58", low = "#d0ccd8") 
+  scale_colour_manual(values = purpleColors, name = "24kb subset\nread depth") +
+  new_scale_color()+
+   geom_step(data = dat2, aes(color=depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)) +
+  scale_color_manual(values = greenColors, name = "11kb subset\nread depth")
+
+  
+  
+dat <- subset(hifi_contig_length, assembly_tool == "flye") %>%
+  subset(read_selection == "random")
+dat1 <- subset(dat, readset == "24kb")
+dat2 <- subset(dat, readset == "11kb")
+
+
+flye_random <- ggplot(dat1, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(aes(color=depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "Cumulative Length",
+    x = "Contig Length (bp)"
+  ) +
+  geom_hline(yintercept=387500000, linetype="dashed") + 
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())+
+  scale_colour_manual(values = purpleColors, name = "24kb subset\nread depth") + 
+  new_scale_color()+
+   geom_step(data = dat2, aes(color=depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)) +
+  scale_color_manual(values = greenColors, name = "11kb subset\nread depth")
+
+dat <- subset(hifi_contig_length, assembly_tool == "hicanu") %>%
+  subset(read_selection == "random")
+dat1 <- subset(dat, readset == "24kb")
+dat2 <- subset(dat, readset == "11kb")
+
+hicanu_random <- ggplot(dat1, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(aes(color=depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "Cumulative Length",
+    x = "Contig Length (bp)"
+  ) +
+  geom_hline(yintercept=387500000, linetype="dashed") + 
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())+
+  scale_colour_manual(values = purpleColors, name = "24kb subset\nread depth") +
+  new_scale_color()+
+   geom_step(data = dat2, aes(color=depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)) +
+  scale_color_manual(values = greenColors, name = "11kb subset\nread depth")
+
+dat <- subset(hifi_contig_length, assembly_tool == "canu") %>%
+  subset(read_selection == "random")
+dat1 <- subset(dat, readset == "24kb")
+dat2 <- subset(dat, readset == "11kb")
+
+canu_random <- ggplot(dat1, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(aes(color=depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    legend.position = "bottom",
+    axis.title = element_text(size=8.5)) +
+  labs(
+    y = "Cumulative Length",
+    x = "Contig Length (bp)"
+  ) +
+  geom_hline(yintercept=387500000, linetype="dashed") + 
+  scale_colour_manual(values = purpleColors, name = "24kb subset\nread depth") +
+  new_scale_color()+
+   geom_step(data = dat2, aes(color=depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)) +
+  scale_color_manual(values = greenColors, name = "11kb subset\nread depth") +
+  guides(colour_new = guide_legend(nrow = 2),
+         colour = guide_legend(nrow = 2)) 
+  
+topSpace <- 0.5
+bottomSpace <- 0.2
+rightSpace <- 0.2
+leftSpace <- 0.2
+N50Col <- "grey"
+
+myPlot <- egg::ggarrange(
+  flye_random + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  hifiasm_random + theme(legend.position="none",
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  hicanu_random + theme(legend.position="none",
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  canu_random + theme(legend.position = "bottom",
+                      plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  heights = c(0.25,0.25,0.25,0.25),
+  labels = c("A - Flye","B - Hifiasm","C - HiCanu","D - Canu"),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+myPlot <- plot_grid(myPlot, ncol = 1, rel_heights = 1)
+
+ggsave("images/hifi_cum_contigs/comparison_of_random_length_dist_across_tools.png",
+         width = 6,
+         height = 8,
+         dpi = 300)
+
+```
+
+
+Compare CLR with hifi
+
+```{r}
+reverselog_trans <- function(base = exp(1)) {
+  trans <- function(x) -log(x, base)
+  inv <- function(x) base^(-x)
+  trans_new(paste0("reverselog-", format(base)), trans, inv, 
+            log_breaks(base=base, n=10),
+            domain = c(1e-100, Inf))
+}
+
+orangeColors <- c("#fadbd1","#f8c3b3","#f5ab94","#f29376","#d87a5c","#a85f48","#784433")
+names(orangeColors) <- c("10","25","50","75","100","125","150")
+
+dat1 <- subset(hifi_contig_length, read_selection == "random") %>%
+  subset(readset == "24kb")
+dat2 <- subset(hifi_contig_length, read_selection == "random") %>%
+  subset(readset == "11kb")
+clr_contig_length$depth <- as.factor(clr_contig_length$depth)
+
+clr_contig_length$depth <- factor(clr_contig_length$depth, levels = c("10","25","50","75","100","125","150"))
+
+dat3 <- subset(clr_contig_length, assembly_tool == "flye") %>%
+  subset(read_selection == "random")
+
+flye_random <- ggplot(dat1, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(color = '#dfdae8') +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "Cumulative Length",
+    x = "Contig Length (bp)") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  geom_step(data = dat2, color = '#d5ebe5') +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000))+
+  geom_step(data = dat3, aes(color = depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)) +
+  scale_colour_manual(values = orangeColors, name = "CLR subset\nread depth") +
+  geom_hline(yintercept=387500000, linetype="dashed") 
+
+dat3 <- subset(clr_contig_length, assembly_tool == "wtdbg2") %>%
+  subset(read_selection == "random")
+
+wtdbg2_random <- ggplot(dat1, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(color = '#dfdae8') +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "Cumulative Length",
+    x = "Contig Length (bp)") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  geom_step(data = dat2, color = '#d5ebe5') +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000))+
+  geom_step(data = dat3, aes(color = depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)) +
+  scale_colour_manual(values = orangeColors, name = "CLR subset\nread depth") +
+  geom_hline(yintercept=387500000, linetype="dashed") 
+  
+dat3 <- subset(clr_contig_length, assembly_tool == "canu") %>%
+  subset(read_selection == "random")
+
+canu_random <- ggplot(dat1, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(color = '#dfdae8') +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "Cumulative Length",
+    x = "Contig Length (bp)") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  geom_step(data = dat2, color = '#d5ebe5') +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000))+
+  geom_step(data = dat3, aes(color = depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)) +
+   scale_colour_manual(values = orangeColors, name = "CLR subset\nread depth") +
+  geom_hline(yintercept=387500000, linetype="dashed") 
+
+dat3 <- subset(clr_contig_length, assembly_tool == "raven") %>%
+  subset(read_selection == "random")
+
+raven_random <- ggplot(dat1, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(color = '#dfdae8') +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "Cumulative Length",
+    x = "Contig Length (bp)") +
+  theme() +
+  geom_step(data = dat2, color = '#d5ebe5') +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000))+
+  geom_step(data = dat3, aes(color = depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)) +
+  scale_colour_manual(values = orangeColors, name = "CLR subset\nread depth") +
+  geom_hline(yintercept=387500000, linetype="dashed") +
+  theme(legend.position = "bottom")
+
+topSpace <- 0.5
+bottomSpace <- 0.2
+rightSpace <- 0.2
+leftSpace <- 0.2
+N50Col <- "grey"
+
+myPlot <- egg::ggarrange(
+  flye_random + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  wtdbg2_random + theme(legend.position="none",
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  canu_random + theme(legend.position="none",
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  raven_random + theme(legend.position="bottom",
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  heights = c(0.25,0.25,0.25,0.25),
+  labels = c("A - Flye","B - Wtdbg2","C - Canu","D - Raven"),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+myPlot <- plot_grid(myPlot, ncol = 1, rel_heights = 1)
+
+ggsave("images/clr_cum_contigs/comparison_of_clr_length_dist_with_hifi_by_tool.png",
+         width = 6,
+         height = 8,
+         dpi = 300)
+```
+
+Graph two contig length distribution lines for lit review example
+
+```{r}
+
+purpleColors <- c("green4")
+names(purpleColors) <- c("60")
+
+greenColors <- c("firebrick2")
+names(greenColors) <- c("10")
+
+dat <- subset(hifi_contig_length, assembly_tool == "flye") %>%
+  subset(read_selection == "random")
+
+dat1 <- subset(dat, readset == "24kb") %>%
+  subset(depth == "60")
+
+dat2 <- subset(dat, readset == "11kb") %>%
+  subset(depth == "10")
+
+
+
+example_contig_length <-  ggplot(dat1, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(aes(color=depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    legend.position = "none",
+    axis.title = element_text(size=8.5)) +
+  labs(
+    y = "Cumulative Length",
+    x = "Contig Length (bp)"
+  ) +
+  geom_hline(yintercept=387500000, linetype="dashed") + 
+  scale_colour_manual(values = purpleColors, name = "Better distribution") +
+  new_scale_color()+
+   geom_step(data = dat2, aes(color=depth)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)) +
+  scale_color_manual(values = greenColors, name = "Poor Distribution") +
+  guides(colour_new = guide_legend(nrow = 2),
+         colour = guide_legend(nrow = 2)) 
+
+myPlot <- plot_grid(example_contig_length, ncol = 1)
+
+ggsave("images/hifi_cum_contigs/example_contig_distribution.png",
+         width = 5,
+         height = 3,
+         dpi = 300)
+
+```
+
+
+# 5x2 plots of vertical alignment of hifi contig length graphs
+
+```{r}
+myColors <- c("orangered3","darkgoldenrod3","gray54","green4")
+clr_contig_length$assembly_tool <- as.factor(clr_contig_length$assembly_tool)
+
+names(myColors) <- levels(clr_contig_length$assembly_tool)
+colScale <- scale_colour_manual(name = "colourFactor",values = myColors)
+
+# Create the plots
+reverselog_trans <- function(base = exp(1)) {
+  trans <- function(x) -log(x, base)
+  inv <- function(x) base^(-x)
+  trans_new(paste0("reverselog-", format(base)), trans, inv, 
+            log_breaks(base=base, n=10),
+            domain = c(1e-100, Inf))
+}
+
+# Cumulative Coverage Plot
+dat <- subset(clr_contig_length, depth == "10")
+a <- ggplot(dat, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(aes(color=assembly_tool, linetype=read_selection)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,100)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "10x Cum. Length",
+    x = "Contig Length (bp)"
+  ) +
+  geom_hline(yintercept=387500000, linetype="dashed") + 
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  colScale
+ 
+a2 <- ggplot(dat, aes(x=id, y=cum_length, group=index)) +
+    geom_line(aes(color=assembly_tool, linetype=read_selection)) +
+    geom_hline(yintercept=387500000, linetype="dashed") +
+    labs(x = "Contigs numbered by length (descending)") +
+    labs(y = "10x Cum. Length") + 
+    labs(assembly_tool = "Assembly tool") +
+    labs(read_selection = "Read Selection") +
+#  scale_color_viridis(discrete = TRUE, option = "D") +
+    theme_bw() +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+    theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())+
+    scale_x_continuous(limits = c(0,4000)) +
+  colScale
+
+dat <- subset(clr_contig_length, depth == "25")
+b <- ggplot(dat, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(aes(color=assembly_tool, linetype=read_selection)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "15x Cum. Length",
+    x = "Contig Length (bp)"
+  ) +
+  geom_hline(yintercept=387500000, linetype="dashed") + 
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())+
+  colScale
+
+b2 <- ggplot(dat, aes(x=id, y=cum_length, group=index)) +
+    geom_line(aes(color=assembly_tool, linetype=read_selection)) +
+    geom_hline(yintercept=387500000, linetype="dashed") +
+    labs(x = "Contigs numbered by length (descending)") +
+    labs(y = "Cumulative length") + 
+    labs(assembly_tool = "Assembly tool") +
+    labs(read_selection = "Read Selection") +
+#  scale_color_viridis(discrete = TRUE, option = "D") +
+    theme_bw() +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+      theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+    scale_x_continuous(limits = c(0,4000))+
+  colScale
+
+dat <- subset(clr_contig_length, depth == "50")
+c <- ggplot(dat, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(aes(color=assembly_tool, linetype=read_selection)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "25x Cum. Length",
+    x = "Contig Length (bp)"
+  ) +
+  geom_hline(yintercept=387500000, linetype="dashed") + 
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())+
+  colScale
+
+c2 <- ggplot(dat, aes(x=id, y=cum_length, group=index)) +
+    geom_line(aes(color=assembly_tool, linetype=read_selection)) +
+    geom_hline(yintercept=387500000, linetype="dashed") +
+    labs(x = "Contigs numbered by length (descending)") +
+    labs(y = "Cumulative length") + 
+    labs(assembly_tool = "Assembly tool") +
+    labs(read_selection = "Read Selection") +
+#  scale_color_viridis(discrete = TRUE,option = "D") +
+    theme_bw() +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+      theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank()) + 
+  scale_x_continuous(limits = c(0,4000))+
+  colScale
+
+dat <- subset(clr_contig_length, depth == "75")
+d <- ggplot(dat, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(aes(color=assembly_tool, linetype=read_selection)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+       size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "35x Cum. Length",
+    x = "Contig Length (bp)"
+  ) +
+  geom_hline(yintercept=387500000, linetype="dashed") + 
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())+
+  colScale
+
+d2 <- ggplot(dat, aes(x=id, y=cum_length, group=index)) +
+    geom_line(aes(color=assembly_tool, linetype=read_selection)) +
+    geom_hline(yintercept=387500000, linetype="dashed") +
+    labs(x = "Contigs numbered by length (descending)") +
+    labs(y = "35x Cum. Length") + 
+    labs(assembly_tool = "Assembly tool") +
+    labs(read_selection = "Read Selection") +
+#  scale_color_viridis(discrete = TRUE,option = "D") +
+    theme_bw() +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+      theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        legend.position = "none") +
+  scale_x_continuous(limits = c(0,4000))+
+  colScale
+
+dat <- subset(clr_contig_length, depth == "100")
+e <- ggplot(dat, aes(x=contig_length, y=cum_length, group = index)) +
+  geom_step(aes(color=assembly_tool, linetype=read_selection)) +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma,
+    limits = c(30000000,1000)
+  ) +
+  scale_y_continuous(labels = label_number(suffix = " Mbp", scale = (1/1000000))) +
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1,
+      size = 8),
+    axis.title = element_text(size=8.5)
+  ) +
+  labs(
+    y = "46x Cum. Length",
+    x = "Contig Length (bp)"
+  ) +
+  geom_hline(yintercept=387500000, linetype="dashed")+
+  colScale
+
+e2 <- ggplot(dat, aes(x=id, y=cum_length, group=index)) +
+    geom_line(aes(color=assembly_tool, linetype=read_selection)) +
+    geom_hline(yintercept=387500000, linetype="dashed") +
+    labs(x = "Contigs numbered in order of descending length") +
+    labs(y = "Cumulative length") + 
+    labs(assembly_tool = "Assembly tool") +
+    labs(read_selection = "Read Selection") +
+#  scale_color_viridis(discrete = TRUE,option = "D") +
+    theme_bw() +
+  scale_y_continuous(labels = label_number(suffix = " Mbp",scale = (1/1000000))) +
+      theme(legend.position = "none",
+        axis.text.x = element_text(
+        angle = 90,
+        vjust = 1,
+        size = 8),
+         axis.title = element_text(size=8.5)) +
+  scale_x_continuous(limits = c(0,4000))+
+  colScale
+
+legend <- get_legend(
+  b + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+#set y axis height
+
+topSpace <- 0.5
+bottomSpace <- 0.2
+rightSpace <- 0.2
+leftSpace <- 0.2
+N50Col <- "magenta"
+
+myPlot <- egg::ggarrange(
+  a + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  a2 + theme(legend.position="none",
+             axis.text.y = element_blank(),
+             axis.title.y = element_blank(),
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  b + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed", color = N50Col, size = 0.5),
+  b2 + theme(legend.position="none",
+             axis.text.y = element_blank(),
+             axis.title.y = element_blank(),
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  c + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  c2 + theme(legend.position="none",
+              axis.text.y = element_blank(),
+              axis.title.y = element_blank(),
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  d + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  d2 + theme(legend.position="none",
+              axis.text.y = element_blank(),
+              axis.title.y = element_blank(),
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  e + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) +
+    geom_hline(yintercept=193750000, linetype="dashed",color = N50Col, size = 0.5),
+  e2 + theme(legend.position="none",
+              axis.text.y = element_blank(),
+              axis.title.y = element_blank(),
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  heights = c(0.2, 0.2,0.2,0.2,0.2),
+  labels = c("A","F","B","G","C","H","D","I","E","J"))
+
+myPlot <- plot_grid(myPlot, legend, ncol = 1, rel_heights = c(1, .05))
+
+annotate_figure(myPlot,
+                top = text_grob("HiFi nuclear genome assembly cumulative contig lengths", 
+                                face = "bold", 
+                                size = 12))
+
+
+ggsave("images/hifi_cum_contigs/allGraphs.png",
+         width = 7,
+         height = 9,
+         dpi = 300)
+
+```
+
+
+# Length Distribution Line graphs for subset data
+
+```{r}
+# Find filepaths and read in files
+file_paths <- dir("./length_distribution/subset_lengths", recursive=TRUE, full.names=TRUE, pattern=".txt$")
+
+length_dist <- vector(mode = "list", length = length(file_paths))
+
+for( i in 1:length(file_paths)) {
+  length_dist[[i]] <- read.delim(file_paths[[i]], header=FALSE)
+  temp <- strsplit(strsplit(file_paths[[i]], "[/]")[[1]][4],"[.]")[[1]][1]
+  length_dist[[i]]$V1 <- temp
+  length_dist[[i]]$V3 <- strsplit(temp, "[_]")[[1]][1]
+}
+
+length_dist_df <- rbindlist(length_dist)
+
+length_dist_df <- length_dist_df[
+  with(length_dist_df, order(V1, V2)),]
+
+length_dist_df <- length_dist_df %>%
+  group_by(V1) %>%
+  mutate(CumLength = cumsum(as.numeric(V2)))
+
+length_dist_df <- length_dist_df %>%
+  group_by() %>%
+  mutate(Coverage = CumLength/387424359)
+
+length_dist_df <- length_dist_df %>% group_by(V1) %>% mutate(id = row_number())
+
+dat <- subset(length_dist_df, grepl("24kb",V1))
+
+ggplot(dat) + 
+  theme_bw() +
+    geom_line(aes(x=V2,y = Coverage, group = V1, color = V3)) +
+  scale_y_continuous(name = "Coverage",
+                     breaks = seq(0,65,10),
+                     labels = label_number(suffix = "x"),
+                     sec.axis = sec_axis(~.,
+                                         breaks = seq(0,65,10),
+                                         labels = label_number(suffix = "x"))) +
+    scale_x_continuous(name = "Read Length (kbp)",
+                       labels = label_number(scale = (1/1000), 
+                                             accuracy = 1),
+                       breaks = seq(0,50000,5000)) +
+  theme(legend.title = element_blank(),
+        legend.position="bottom") +
+  ggtitle("HiFi 24kb cumulative read length distributions of data subsets")
+
+ggsave("images/read_length_distribution/hifi24kb_subsets_random_long_cumulative_dist.png",
+         width = 8,
+         height = 4,
+         dpi = 300)
+
+dat <- subset(length_dist_df, grepl("11kb",V1))
+
+ggplot(dat) + 
+  theme_bw() +
+    geom_line(aes(x=V2,y = Coverage, group = V1, color = V3)) +
+  scale_y_continuous(name = "Coverage",
+                     breaks = seq(0,65,10),
+                     labels = label_number(suffix = "x"),
+                     sec.axis = sec_axis(~.,
+                                         breaks = seq(0,65,10),
+                                         labels = label_number(suffix = "x"))) +
+    scale_x_continuous(name = "Read Length (kbp)",
+                       labels = label_number(scale = (1/1000), 
+                                             accuracy = 1),
+                       breaks = seq(0,50000,5000)) +
+  theme(legend.title = element_blank(),
+        legend.position="bottom") +
+  ggtitle("HiFi 11kb cumulative read length distributions of data subsets") +
+  expand_limits(x = c(0,50000))
+
+ggsave("images/read_length_distribution/hifi11kb_subsets_random_long_cumulative_dist.png",
+         width = 8,
+         height = 4,
+         dpi = 300)
+
+file_paths <- dir("./length_distribution/subset_lengths", recursive=TRUE, full.names=TRUE, pattern=".txt$")
+
+length_dist <- vector(mode = "list", length = length(file_paths))
+
+for( i in 1:length(file_paths)) {
+  length_dist[[i]] <- read.delim(file_paths[[i]], header=FALSE)
+  temp <- strsplit(strsplit(file_paths[[i]], "[/]")[[1]][4],"[.]")[[1]][1]
+  length_dist[[i]]$V1 <- temp
+  length_dist[[i]]$V3 <- strsplit(temp, "[_]")[[1]][1]
+}
+
+length_dist_df <- rbindlist(length_dist)
+
+length_dist_df <- length_dist_df[
+  with(length_dist_df, order(V1, V2)),]
+
+length_dist_df <- length_dist_df %>%
+  group_by(V1) %>%
+  mutate(CumLength = cumsum(as.numeric(V2)))
+
+length_dist_df <- length_dist_df %>%
+  group_by() %>%
+  mutate(Coverage = CumLength/387424359)
+
+length_dist_df <- length_dist_df %>% group_by(V1) %>% mutate(id = row_number())
+
+
+dat <- subset(length_dist_df, grepl("30kb",V1)) %>%
+  subset(V3 == "random") 
+
+c <- ggplot(dat) + 
+  theme_bw() +
+    geom_line(aes(x=V2,y = Coverage, group = V1, color = V3)) +
+  scale_y_continuous(name = "Coverage",
+                     breaks = seq(0,150,25),
+                     labels = label_number(suffix = "x"),
+                     sec.axis = sec_axis(~.,
+                                         breaks = seq(0,150,25),
+                                         labels = label_number(suffix = "x"))) +
+    scale_x_continuous(name = "Read Length (kbp)",
+                       labels = label_number(scale = (1/1000), 
+                                             accuracy = 1),
+                       breaks = seq(0,180000,20000)) +
+  theme(legend.title = element_blank(),
+        legend.position="bottom") +
+  ggtitle("CLR 30kb cumulative read length distributions of data subsets")
+
+ggsave("images/read_length_distribution/clr_kb_subsets_random_long_cumulative_dist.png",
+         width = 8,
+         height = 4,
+         dpi = 300)
+
+
+# Both 24kb and 11kb subsets in the same graph
+dat <- subset(length_dist_df, grepl("24kb",V1))
+
+a <- ggplot(dat) + 
+  theme_bw() +
+    geom_line(aes(x=V2,y = Coverage, group = V1, color = V3)) +
+  scale_y_continuous(name = "Coverage",
+                     breaks = seq(0,65,10),
+                     labels = label_number(suffix = "x"),
+                     sec.axis = sec_axis(~.,
+                                         breaks = seq(0,65,10),
+                                         labels = label_number(suffix = "x"))) +
+    scale_x_continuous(name = "Read Length (kbp)",
+                       labels = label_number(scale = (1/1000), 
+                                             accuracy = 1),
+                       breaks = seq(0,50000,5000)) +
+  theme(legend.title = element_blank(),
+        legend.position="bottom")
+
+dat <- subset(length_dist_df, grepl("11kb",V1))
+
+b <- ggplot(dat) + 
+  theme_bw() +
+    geom_line(aes(x=V2,y = Coverage, group = V1, color = V3)) +
+  scale_y_continuous(name = "Coverage",
+                     breaks = seq(0,65,10),
+                     labels = label_number(suffix = "x"),
+                     sec.axis = sec_axis(~.,
+                                         breaks = seq(0,65,10),
+                                         labels = label_number(suffix = "x"))) +
+    scale_x_continuous(name = "Read Length (kbp)",
+                       labels = label_number(scale = (1/1000), 
+                                             accuracy = 1),
+                       breaks = seq(0,50000,5000)) +
+  theme(legend.title = element_blank(),
+        legend.position="bottom") +
+  expand_limits(x = c(0,50000))
+
+legend <- get_legend(
+  a + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+topSpace <- 0.5
+bottomSpace <- 0.2
+rightSpace <- 0.2
+leftSpace <- 0.2
+
+myPlot <- egg::ggarrange(
+  b + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank()),
+  a + theme(legend.position="none",
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  heights = c(0.5,0.5),
+  labels = c("A","B"))
+
+myPlot <- plot_grid(myPlot, legend, ncol = 1, rel_heights = c(1, .05))
+
+ggsave("images/read_length_distribution/hifi11_and_24kb_subsets_random_long_cumulative_dist.png",
+         width = 6,
+         height = 6,
+         dpi = 300)
+
+```
+
+
+```{r}
+dat <- subset(length_dist_df, grepl("30kb",V1)) %>%
+  subset(V3 == "longest")
+
+a <- ggplot(dat) + 
+  theme_bw() +
+    geom_line(aes(x=V2,y = Coverage, group = V1, color = V3)) +
+  scale_y_continuous(name = "Coverage",
+                     breaks = seq(0,150,25),
+                     labels = label_number(suffix = "x"),
+                     sec.axis = sec_axis(~.,
+                                         breaks = seq(0,150,25),
+                                         labels = label_number(suffix = "x"))) +
+    scale_x_continuous(name = "Read Length (kbp)",
+                       labels = label_number(scale = (1/1000), 
+                                             accuracy = 1),
+                       breaks = seq(0,180000,20000)) +
+  theme(legend.title = element_blank(),
+        legend.position="bottom") +
+  expand_limits(x = c(0,180000))
+
+adat <- subset(length_dist_df, grepl("30kb",V1)) %>%
+  subset(V3 == "longest")
+
+b <- ggplot(dat) + 
+  theme_bw() +
+    geom_line(aes(x=V2,y = Coverage, group = V1, color = V3)) +
+  scale_y_continuous(name = "Coverage",
+                     breaks = seq(0,150,25),
+                     labels = label_number(suffix = "x"),
+                     sec.axis = sec_axis(~.,
+                                         breaks = seq(0,150,25),
+                                         labels = label_number(suffix = "x"))) +
+    scale_x_continuous(name = "Read Length (kbp)",
+                       labels = label_number(scale = (1/1000), 
+                                             accuracy = 1),
+                       breaks = seq(0,180000,20000)) +
+  theme(legend.title = element_blank(),
+        legend.position="bottom") +
+  expand_limits(x = c(0,180000))
+
+legend <- get_legend(
+  a + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+topSpace <- 0.5
+bottomSpace <- 0.2
+rightSpace <- 0.2
+leftSpace <- 0.2
+
+myPlot <- egg::ggarrange(
+  b + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank()),
+  a + theme(legend.position="none",
+             plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  heights = c(0.5,0.5),
+  labels = c("A","B"))
+
+myPlot <- plot_grid(myPlot, legend, ncol = 1, rel_heights = c(1, .05))
+
+ggsave("images/read_length_distribution/test_wo_visual2.png",
+         width = 6,
+         height = 6,
+         dpi = 300)
+
+```
+
+
+
+# code from nathan for making graphs
+
+```
+library(tidyverse)
+library(ggpubr)
+library(scales)
+
+# Load the data
+dat <- read_tsv("./Oaustraliensis_keepriver_flowcell1-2-3_guppy303_all.fastq.gz.cumsum.tab.gz", col_names=c("Length", "CumLength", "Coverage"))
+
+# Setup new axis transformation function - i.e. logged and reversed
+reverselog_trans <- function(base = exp(1)) {
+  trans <- function(x) -log(x, base)
+  inv <- function(x) base^(-x)
+  trans_new(paste0("reverselog-", format(base)), trans, inv, 
+            log_breaks(base=base, n=10),
+            domain = c(1e-100, Inf))
+}
+
+# Cumulative Coverage Plot
+max_coverage = max(dat$Coverage)
+a <- ggplot(dat, aes(x=Length, y=Coverage)) +
+  geom_step() +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma
+  ) +
+  scale_y_continuous(
+    breaks = seq(0,100,2),
+    sec.axis = sec_axis(
+      ~./max_coverage,
+      labels = percent,
+      name = "Coverage [%]",
+      breaks = seq(0,1,0.05)
+    )
+  ) +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1
+    )
+  ) +
+  labs(
+    title = "Cumulative Read Coverage by Ordered Read Length",
+    y = "Coverage [x]",
+    x = "Read Length [bp]"
+  )
+
+# Number of reads longer than a given length
+max_reads = length(dat$Length)
+b <- ggplot(dat, aes(x=Length, y=1:length(Length))) +
+  geom_step() +
+  scale_x_continuous(
+    trans = reverselog_trans(10),
+    label = comma
+  ) +
+  scale_y_continuous(
+    label = comma,
+    breaks = seq(0,2000000,100000),
+    sec.axis = sec_axis(
+      ~./max_reads,
+      labels = percent,
+      name = "Number of Reads [%]",
+      breaks = seq(0,1,0.05)
+    )
+  ) +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 1
+    )
+  ) +
+  labs(
+    title = "Number of Reads Larger than a Given Length",
+    y = "Number of Reads",
+    x = "Read Length [bp]"
+  )
+
+# Arrange the plots ready for publication
+ggarrange(a, b,
+          labels = c("A", "B"),
+          ncol = 1,
+          nrow = 2,
+          align = "v")
+```
+
+

@@ -1,0 +1,389 @@
+---
+title: "sequencing_cost"
+author: "Chelsea Matthews"
+date: "26 May 2020"
+output:
+  html_document:
+      code_folding: "show"
+      number_sections: TRUE
+      toc: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+											results = "asis",
+											message = FALSE, warning = FALSE,
+											error = FALSE)
+```
+
+
+```{r}
+library(plyr)
+library(tidyverse)
+library(ggplot2)
+library(grImport)
+library(XML)
+library(kableExtra)
+library(cluster)
+library(purrr)
+library(data.table)
+library(ggpubr)
+library(scales)
+library(viridis)
+library(dplyr)
+library(cowplot) 
+library(egg) 
+library(RColorBrewer)
+```
+
+Graph hifi and clr data set size comparisons for other genomes
+
+```{r}
+theme_set(theme_bw())
+
+size <- c(189.1, 66.5, 24.6,
+          15.3,11.2, 9, 16.6, 11.8, 12.4, 27.5,
+          48.1, 25.3, 11, 9.2,29.7,
+          16.6, 21.6, 22.9, 23.5, 12, 21.7, 22.3)
+org <- c("Frog","Mouse","Drosophila",
+         "HG00733","HG00733","HG00733","HG00733","HG00733","HG00733","HG00733",
+         "Maize","MH63","MH63","MH63","Strawberry",
+         "Sequoia\nsempervirens","Sequoia\nsempervirens","Sequoia\nsempervirens","Sequoia\nsempervirens","Sequoia\nsempervirens","Sequoia\nsempervirens","Sequoia\nsempervirens")
+
+hifi_dat <- data.frame(size, org)
+
+hifi_dat$org <- factor(hifi_dat$org, levels = c("Drosophila","Frog","HG00733","Maize","Mouse","MH63","Sequoia\nsempervirens","Strawberry"))
+
+
+x <- c("Drosophila","Drosophila","Strawberry","Strawberry")
+y <- c(10,30,30,10)
+col <- c("red","red","red","red")
+shading <- data.frame(x,y,col) 
+shading$x <- factor(shading$x, levels = c("Drosophila","Frog","HG00733","Maize","Mouse","MH63","Sequoia\nsempervirens","Strawberry"))
+
+mh63hifi <- subset(hifi_dat,org == "MH63")
+mh63hifi1 <-  subset(hifi_dat,org == "MH63") %>% subset(size == 25.3)
+mh63hifi2 <-  subset(hifi_dat,org == "MH63") %>% subset(size == 11)
+mh63hifi3 <-  subset(hifi_dat,org == "MH63") %>% subset(size == 9.2)
+
+hifi_through_data <- ggplot(hifi_dat, aes(x = org, y = size)) +
+  geom_point(alpha=0.01) +
+  geom_rect(aes(ymin = 30, ymax = 75, xmin = 0.4, xmax = 8.6), fill = "dodgerblue2",alpha = 0.01)+
+  geom_point(alpha=0.5, color = "black") +
+  geom_point(dat = mh63hifi1, aes(x = org, y = size), color = '#65587F', size = 2) +
+  geom_point(dat = mh63hifi2, aes(x = org, y = size), color = '#50BDA1', size = 2) +
+  geom_point(dat = mh63hifi3, aes(x = org, y = size), color = 'green4', size = 2) +
+  theme_bw() +
+  scale_y_continuous(labels = label_number(suffix = " Gb"),
+                     breaks = seq(0,200,50)) +
+  labs(x = "Organism",
+       y = "Number of bases")
+
+ggsave("images/cost/hifi_throughput.png",
+         width = 5,
+         height = 3,
+         dpi = 300)
+
+size <- c(300.6, 177, 363.3, 95.1, 86.1, 97.2, 71.2, 130.8,92, 101.5,86.1)
+
+org <- c("HG002", "HG03009", "HG00731","HG002","HG002","HG002",
+         "MH63","Drosophila","HG002","HG002","HG002")
+clr_dat <- data.frame(size,org)
+
+mh63clr <- subset(clr_dat, org == "MH63")
+
+clr_through_data <- ggplot(clr_dat, aes(x = org, y = size)) +
+  geom_point(alpha = 0.01) + 
+  geom_rect(aes(ymin = 80, ymax = 200, xmin = 0.4, xmax = 5.6), fill = "dodgerblue2",alpha = 0.02)+
+  geom_point(alpha = 0.5,color = "black") + 
+  geom_point(dat = mh63clr, aes(x = org, y = size), color = '#F18867', size = 2) +
+  theme_bw() +
+  scale_y_continuous(labels = label_number(suffix = " Gb")) +
+  labs(x = "Organism",
+       y = "Number of bases")+
+  expand_limits(y=c(0,400))
+
+ggsave("images/cost/clr_throughput.png",
+         width = 5,
+         height = 3,
+         dpi = 300)
+
+topSpace <- 0.5
+bottomSpace <- 0.1
+rightSpace <- 0.1
+leftSpace <- 0.1
+
+myPlot <- egg::ggarrange(
+  clr_through_data + theme(legend.position = "none",
+                           plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  hifi_through_data +theme(legend.position = "none",
+                           plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  heights = c(0.5,0.5),
+  labels = c("A - CLR Throughput","B - HiFi Throughput"),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+endPlot <- plot_grid(myPlot, nrow = 1)
+
+ggsave("images/cost/all_throughput_data_examples.png",
+         width = 5.5,
+         height = 4,
+         dpi = 300)
+
+```
+
+```{r}
+
+#COST graph for adjusted throughput
+minSize <- 100000000
+maxSize <- 5000000000
+hifiPrice <- 4199
+hifi_min_throughput <- 25000000000
+hifi_max_throughput <- 25000000000
+hifi_min_cov <- 15
+hifi_max_cov <- 25
+clrPrice <- 3399
+clr_min_throughput <- 70000000000
+clr_max_throughput <- 70000000000
+clr_min_cov <- 25
+clr_max_cov <- 50
+
+#dataframe describing shaded areas
+x <- c(minSize,minSize,maxSize,maxSize,
+       minSize,minSize,maxSize,maxSize)
+y <- c(hifiPrice*((hifi_max_cov*minSize)/hifi_min_throughput),
+       hifiPrice*((hifi_min_cov*minSize)/hifi_max_throughput),
+       hifiPrice*((hifi_min_cov*maxSize)/hifi_max_throughput),
+       hifiPrice*((hifi_max_cov*maxSize)/hifi_min_throughput),
+       clrPrice*((clr_max_cov*minSize)/clr_min_throughput),
+       clrPrice*((clr_min_cov*minSize)/clr_max_throughput),
+       clrPrice*((clr_min_cov*maxSize)/clr_max_throughput),
+       clrPrice*((clr_max_cov*maxSize)/clr_min_throughput))
+grp <- c("HiFi","HiFi","HiFi","HiFi",
+         "CLR","CLR","CLR","CLR")
+
+shade <- data.frame(x,y,grp)
+
+#dataframe describing lines
+x <- c(minSize,minSize,minSize,minSize)
+y <- c(hifiPrice*((hifi_min_cov*minSize)/hifi_max_throughput),
+       hifiPrice*((hifi_max_cov*minSize)/hifi_min_throughput),
+       clrPrice*((clr_min_cov*minSize)/clr_max_throughput),
+       clrPrice*((clr_max_cov*minSize)/clr_min_throughput))
+xend <- c(maxSize,maxSize,maxSize,maxSize)
+yend <- c(hifiPrice*((hifi_min_cov*maxSize)/hifi_max_throughput),
+          hifiPrice*((hifi_max_cov*maxSize)/hifi_min_throughput),
+          clrPrice*((clr_min_cov*maxSize)/clr_max_throughput),
+          clrPrice*((clr_max_cov*maxSize)/clr_min_throughput))
+grp <- c("HiFi","HiFi","CLR","CLR")
+
+line <- data.frame(x,y,xend,yend,grp)
+
+hifi_slope <- (hifiPrice*((hifi_max_cov*maxSize)/hifi_min_throughput)-hifiPrice*((hifi_max_cov*minSize)/hifi_min_throughput))/(maxSize-minSize)
+
+multiple <- c(1,2,3,4,5,6,1,2,3,4,5)
+cost <- c(clrPrice,clrPrice*2,clrPrice*3,clrPrice*4,clrPrice*5,clrPrice*6,
+          hifiPrice,hifiPrice*2,hifiPrice*3,hifiPrice*4,hifiPrice*5)
+color <- c("CLR","CLR","CLR","CLR","CLR","CLR",
+           "HiFi","HiFi","HiFi","HiFi","HiFi")
+length <- c(100000000,100000000,100000000,100000000,100000000,100000000,
+            5100000000,5100000000,5100000000,5100000000,5100000000)
+num_cells <- data.frame(multiple, cost, color, length)
+num_cells$multiple <- as.factor(num_cells$multiple)
+
+myColors <- c("darkorange2","dodgerblue4")
+names(myColors) <- c("HiFi","CLR")
+colScale <- scale_colour_manual(name = "Estimated Price Range",values = myColors)
+
+adjusted_seq_cost <- ggplot(shade, aes(x = x, y = y, group = grp, fill = grp)) +
+  geom_polygon(alpha = 0.3) +
+  geom_segment(data = line, aes(x=x, y=y, xend=xend, yend=yend, group = grp, color = grp)) +
+  scale_x_continuous(labels = label_number(suffix = " Gb", 
+                                           scale = (1/1000000000),
+                                           accuracy = 0.1),
+                     breaks = c(minSize, 1000000000,2000000000,3000000000,4000000000,5000000000)) +
+  scale_y_continuous(label = dollar_format(), 
+                     breaks = seq(0,25000,5000)) +
+  expand_limits(y = c(0,22000)) +
+  colScale +
+  scale_fill_manual(name = "Estimated Price Range", values = myColors)+
+  xlab("Genome Length") +
+  ylab("Price (USD)") +
+  labs(fill = "Read Type",
+       color = "Read Type") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  geom_hline(yintercept = hifiPrice, color = "darkorange2", size = 0.8, linetype = "dashed") +
+  geom_hline(yintercept = clrPrice, color = "dodgerblue4", size = 0.8, linetype= "dashed") 
+#  scale_colour_manual(name = "Assembly Tool", values = myColors) + 
+
+ggsave("images/cost/adjusted_sequencing_cost_graph.png",
+         width = 6,
+         height = 4,
+         dpi = 300)
+
+#COST graph for quoted throughput as shown in cost graphs.
+
+minSize <- 100000000
+maxSize <- 5000000000
+hifiPrice <- 4199
+hifi_min_throughput <- 30000000000
+hifi_max_throughput <- 75000000000
+hifi_min_cov <- 15
+hifi_max_cov <- 25
+clrPrice <- 3399
+clr_min_throughput <- 80000000000
+clr_max_throughput <- 200000000000
+clr_min_cov <- 25
+clr_max_cov <- 50
+
+#dataframe describing shaded areas
+x <- c(minSize,minSize,maxSize,maxSize,
+       minSize,minSize,maxSize,maxSize)
+y <- c(hifiPrice*((hifi_max_cov*minSize)/hifi_min_throughput),
+       hifiPrice*((hifi_min_cov*minSize)/hifi_max_throughput),
+       hifiPrice*((hifi_min_cov*maxSize)/hifi_max_throughput),
+       hifiPrice*((hifi_max_cov*maxSize)/hifi_min_throughput),
+       clrPrice*((clr_max_cov*minSize)/clr_min_throughput),
+       clrPrice*((clr_min_cov*minSize)/clr_max_throughput),
+       clrPrice*((clr_min_cov*maxSize)/clr_max_throughput),
+       clrPrice*((clr_max_cov*maxSize)/clr_min_throughput))
+grp <- c("HiFi","HiFi","HiFi","HiFi",
+         "CLR","CLR","CLR","CLR")
+
+shade <- data.frame(x,y,grp)
+
+#dataframe describing lines
+x <- c(minSize,minSize,minSize,minSize)
+y <- c(hifiPrice*((hifi_min_cov*minSize)/hifi_max_throughput),
+       hifiPrice*((hifi_max_cov*minSize)/hifi_min_throughput),
+       clrPrice*((clr_min_cov*minSize)/clr_max_throughput),
+       clrPrice*((clr_max_cov*minSize)/clr_min_throughput))
+xend <- c(maxSize,maxSize,maxSize,maxSize)
+yend <- c(hifiPrice*((hifi_min_cov*maxSize)/hifi_max_throughput),
+          hifiPrice*((hifi_max_cov*maxSize)/hifi_min_throughput),
+          clrPrice*((clr_min_cov*maxSize)/clr_max_throughput),
+          clrPrice*((clr_max_cov*maxSize)/clr_min_throughput))
+grp <- c("HiFi","HiFi","CLR","CLR")
+
+line <- data.frame(x,y,xend,yend,grp)
+
+hifi_slope <- (hifiPrice*((hifi_max_cov*maxSize)/hifi_min_throughput)-hifiPrice*((hifi_max_cov*minSize)/hifi_min_throughput))/(maxSize-minSize)
+
+myColors <- c("darkorange2","dodgerblue4")
+names(myColors) <- c("HiFi","CLR")
+colScale <- scale_colour_manual(name = "Estimated Price Range",values = myColors)
+
+quote_seq_cost <- ggplot(shade, aes(x = x, y = y, group = grp, fill = grp)) +
+  geom_polygon(alpha = 0.3) +
+  geom_segment(data = line, aes(x=x, y=y, xend=xend, yend=yend, group = grp, color = grp)) +
+  scale_x_continuous(labels = label_number(suffix = " Gb", 
+                                           scale = (1/1000000000),
+                                           accuracy = 0.1),
+                     breaks = c(minSize, 1000000000,2000000000,3000000000,4000000000,5000000000)) +
+  scale_y_continuous(label = dollar_format(), 
+                     breaks = c(0,5000,10000,15000,20000,25000)) +
+  expand_limits(y = c(0,22000))+
+  colScale+
+  scale_fill_manual(name = "Estimated Price Range", values = myColors)+
+  xlab("Genome Length") +
+  ylab("Price (USD)") +
+  labs(fill = "Read Type",
+       color = "Read Type") +
+  theme_bw()+
+  theme(legend.position = "bottom") +
+  geom_hline(yintercept = hifiPrice, color = "darkorange2", size = 0.8, linetype = "dashed") +
+  geom_hline(yintercept = clrPrice, color = "dodgerblue4", size = 0.8, linetype= "dashed")
+
+ggsave("images/cost/quote_sequencing_cost.png",
+         width = 6,
+         height = 4,
+         dpi = 300)
+
+legend <- get_legend(
+  quote_seq_cost + 
+    guides(color = guide_legend(nrow = 1)) +
+    guides(linetype = FALSE) +
+    theme_classic() +
+    theme(legend.position = "bottom")
+  )
+
+legend <- get_legend(
+  quote_seq_cost +
+    theme(legend.position = "bottom")
+  )
+
+topSpace <- 0.6
+bottomSpace <- 0.2
+rightSpace <- 0.2
+leftSpace <- 0.2
+
+myPlot <- egg::ggarrange(
+  quote_seq_cost +theme(legend.position = "none",
+                        plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  adjusted_seq_cost +theme(legend.position = "none",
+                           plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                           axis.ticks.y = element_blank(),
+                           axis.text.y = element_blank(),
+                           axis.title.y = element_blank()),
+  widths = c(0.5,0.5),
+  labels = c("              A",
+             "B"),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+
+endPlot <- plot_grid(myPlot, legend, nrow = 2, rel_heights = c(1, .09))
+
+ggsave("images/cost/all_cost_estimates.png",
+         width = 8,
+         height = 4,
+         dpi = 300)
+
+
+```
+
+
+
+
+
+```{r}
+library(manipulateWidget)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(dygraphs)
+
+#Goes from genome size = 0 to 5gbp
+
+# plotGraph <- function(minGb,maxGb,cost){
+#   x <- c(0.5,0.5,5,5)
+#   y <- c(0.5*minGb*cost,0.5*maxGb*cost,5*maxGb*cost,5*minGb*cost)
+#   dat <- data.frame(x,y)
+#   ggplot(data = dat, aes(x = x, y = y))+
+#     geom_polygon() %>% gplotl
+# }
+
+
+
+
+mydata <- data.frame(
+  timeId = 1:100,
+  series1 = rnorm(100),
+  series2 = rnorm(100),
+  series3 = rnorm(100)
+)
+manipulateWidget(
+  dygraph(mydata[range[1]:range[2], c("timeId", series)], main = title),
+  range = mwSlider(1, 100, c(1, 100)),
+  series = mwSelect(c("series1", "series2", "series3")),
+  title = mwText(),
+  .compare = list(
+    title = list("First chart", "Second chart"),
+    series = NULL
+  )
+)
+
+```
+
+

@@ -1,0 +1,1039 @@
+---
+title: "quast"
+author: "Chelsea Matthews"
+date: "26 April 2020"
+output:
+  html_document:
+      code_folding: "show"
+      number_sections: TRUE
+      toc: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+											results = "asis",
+											message = FALSE, warning = FALSE,
+											error = FALSE)
+```
+
+Loading libraries
+
+```{r}
+library(plyr)
+library(tidyverse)
+library(ggplot2)
+library(grImport)
+library(XML)
+library(kableExtra)
+library(cluster)
+library(purrr)
+library(data.table)
+library(ggpubr)
+library(scales)
+library(viridis)
+library(dplyr)
+library(cowplot) 
+library(egg) 
+library(RColorBrewer)
+```
+
+
+#downloaded files using:
+
+chelsea@Chelseas-Laptop:~/fast_dir/pacbio_hifi$ rsync -amv --include='*.tsv' --include='*/' --ignore-existing --exclude='*' phoenix:/home/a1761942/fast_dir/pacbio_hifi/quastref .
+
+
+
+```{r}
+hifi_files <- dir("../pacbio_hifi/quastref", recursive=TRUE, full.names=TRUE, pattern="^report.tsv")
+clr_files <- dir("../pacbio_clr/quastref", recursive=TRUE, full.names=TRUE, pattern="^report.tsv")
+clr_files <- clr_files[!str_detect(clr_files,pattern="polishdepth")]
+
+```
+
+Hifi Data processing
+
+```{r}
+
+colheader <- read_lines(hifi_files[[50]], skip = 1) %>% 
+  str_split("\t") %>%
+  sapply('[[',1)
+
+colheader <- gsub(" ", "_", colheader)
+colheader <- gsub("#", "Num", colheader)
+colheader <- gsub("(%)", "percent", colheader)
+colheader <- gsub("[()]", "", colheader)
+
+assInfoColnames <- c("read_type","assembly_type","assembly_tool",
+                     "read_selection","prefix","bbduk_cov",
+                     "bbduk_kmer","depth","rule_name")
+colheader <- c(colheader,assInfoColnames)
+hifi_quast <- data.frame(matrix(NA, nrow=length(hifi_files), ncol=length(colheader)))
+colnames(hifi_quast) <- colheader
+
+for(i in 1:length(hifi_files)){
+  temp <- read_lines(hifi_files[[i]], skip = 1) %>% 
+    str_split("\t") %>%
+    sapply('[[',2)
+  if(length(temp) == 51){
+    hifi_quast[i,1:51] <- temp
+  } else {
+    hifi_quast[i,1:33] <- temp[1:33]
+    hifi_quast[i,35:51] <- temp[34:50]
+  }
+  strs <- unlist(strsplit(hifi_files[i], "/"))
+  strs <- unlist(strsplit(strs, "_"))
+  strs <- unlist(strsplit(strs, "\\."))
+  
+  hifi_quast[i,"read_type"] <- "hifi"
+  hifi_quast[i,"assembly_type"] <- strs[match("assemblytype", strs) +1]
+  hifi_quast[i,"assembly_tool"] <- strs[match("assemblytool", strs) +1]
+  hifi_quast[i,"read_selection"] <- strs[match("readselect", strs) +1]
+  hifi_quast[i,"prefix"] <- strs[match("prefix", strs) +1]
+  hifi_quast[i,"bbduk_cov"] <- paste0("0.",strs[match("cov", strs) +2])
+  hifi_quast[i,"bbduk_kmer"] <- strs[match("kmer", strs) +1]
+  hifi_quast[i,"depth"] <- strs[match("depth", strs) +1]
+  hifi_quast[i,"rule_name"] <- strs[match("assemblytool", strs) +1]
+}
+
+hifi_quast$ID <- seq.int(nrow(hifi_quast))
+hifi_quast[,1:51] <- sapply(hifi_quast[,1:51],as.numeric)
+hifi_quast <- hifi_quast %>% 
+  dplyr::mutate(depth = factor(depth, 
+                                    levels = c("10","15","25","35","50","60","75","100","200")))
+
+hifi_quast$prefix <- str_replace(hifi_quast$prefix, "rice24kb", "hifi24kb")
+hifi_quast$prefix <- str_replace(hifi_quast$prefix, "SRR99694", "hifi11kb")
+
+```
+
+CLR processing
+
+```{r}
+colheader <- read_lines(clr_files[[50]], skip = 1) %>% 
+  str_split("\t") %>%
+  sapply('[[',1)
+
+colheader <- gsub(" ", "_", colheader)
+colheader <- gsub("#", "Num", colheader)
+colheader <- gsub("(%)", "percent", colheader)
+colheader <- gsub("[()]", "", colheader)
+
+assInfoColnames <- c("read_type","assembly_type","assembly_tool",
+                     "read_selection","prefix","bbduk_cov",
+                     "bbduk_kmer","depth","rule_name")
+colheader <- c(colheader,assInfoColnames)
+clr_quast <- data.frame(matrix(NA, nrow=length(clr_files), ncol=length(colheader)))
+colnames(clr_quast) <- colheader
+
+for(i in 1:length(clr_files)){
+  temp <- read_lines(clr_files[[i]], skip = 1) %>% 
+    str_split("\t") %>%
+    sapply('[[',2)
+  if(length(temp) == 51){
+    clr_quast[i,1:51] <- temp
+  } else if(length(temp) == 47) {
+    if(temp[30] == "0") {
+      clr_quast[i,1:24] <- temp[1:24]
+      clr_quast[i,27:49] <- temp[25:47]
+    }
+    else {
+      clr_quast[i,1:45] <- temp[1:45]
+      clr_quast[i,46:47] <- temp[48:49]
+    }
+
+  }
+  else {
+    clr_quast[i,1:33] <- temp[1:33]
+    clr_quast[i,35:51] <- temp[34:50]
+  }
+  strs <- unlist(strsplit(clr_files[i], "/"))
+  strs <- unlist(strsplit(strs, "_"))
+  strs <- unlist(strsplit(strs, "\\."))
+  
+  clr_quast[i,"read_type"] <- "clr"
+  clr_quast[i,"assembly_type"] <- strs[match("assemblytype", strs) +1]
+  clr_quast[i,"assembly_tool"] <- strs[match("assemblytool", strs) +1]
+  clr_quast[i,"read_selection"] <- strs[match("readselect", strs) +1]
+  clr_quast[i,"prefix"] <- strs[match("prefix", strs) +1]
+  clr_quast[i,"bbduk_cov"] <- paste0("0.",strs[match("cov", strs) +2])
+  clr_quast[i,"bbduk_kmer"] <- strs[match("kmer", strs) +1]
+  clr_quast[i,"depth"] <- strs[match("depth", strs) +1]
+  clr_quast[i,"rule_name"] <- strs[match("assemblytool", strs) +1]
+}
+
+clr_quast$ID <- seq.int(nrow(clr_quast))
+clr_quast[,1:51] <- sapply(clr_quast[,1:51],as.numeric)
+clr_quast <- clr_quast %>% 
+  dplyr::mutate(depth = factor(depth, 
+                                    levels = c("10","25","50","75","100","125","150","200")))
+clr_quast$prefix <- "clr"
+
+all_quast <- rbind(hifi_quast,clr_quast)
+
+#Create a column to use for deciding colours of graphs.
+all_quast$colourFactor <- paste0(all_quast$assembly_tool,all_quast$read_type)
+all_quast$colourFactor <- as.factor(all_quast$colourFactor)
+
+temp <- subset(all_quast, assembly_type == "genome") %>%
+  subset(assembly_tool == "raven") %>%
+  subset(depth == "10")
+
+```
+
+
+Comparison of basic stats (NG50, Number of Contigs, Total Length of assembly) for random selection
+
+
+```{r}
+
+#defining colours
+myColors <- c("orangered3","darkgoldenrod3","slateblue3","plum3","gray54","green4")
+all_quast$assembly_tool <- as.factor(all_quast$assembly_tool)
+names(myColors) <- levels(all_quast$assembly_tool)
+colScale <- scale_colour_manual(name = "Assembly Tool",values = myColors)
+
+
+dat <- subset(all_quast, assembly_type == "genome") %>%
+  subset(read_selection == "random") %>%
+  subset(prefix == "clr")
+
+clr1 <- ggplot(dat, aes(x = depth, y=NG50, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_log10(labels = label_number(suffix = " Mb", 
+                                      scale = (1/1000000)),
+                breaks = c(100000,1000000,10000000,100000000)) +
+  colScale +
+  expand_limits(y=c(100000,100000000))
+
+
+clr2 <- ggplot(dat, aes(x = depth, y=Num_contigs, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale+
+  ylab("Number of Contigs") +
+  expand_limits(y = c(30, 10000)) +
+  scale_y_log10(breaks = c(30,100,300,1000,3000,10000))
+  
+clr3 <- ggplot(dat, aes(x = depth, y=Total_length, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_continuous(labels = label_number(suffix = " Mb", scale = (1/1000000))) +
+  colScale +
+  expand_limits(y = c(250000000, 550000000)) +
+  geom_hline(yintercept = 387500000, linetype = "dashed", color = "black",size= 0.3) +
+  ylab("Total Length")
+
+clr4 <- ggplot(dat, aes(x = depth, y=Unaligned_length, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale +
+  expand_limits(y = c(1000000,100000000)) +
+  ylab("Unaligned Length") +
+  scale_y_log10(breaks = c(1000000,10000000,100000000),
+                labels = label_number(suffix = " Mb", 
+                                      scale = (1/1000000),
+                                      accuracy = 1))
+
+
+#Hifi24kb random genome graphs
+dat <- subset(all_quast, assembly_type == "genome") %>%
+  subset(read_selection == "random") %>%
+  subset(prefix == "hifi24kb")
+
+h241 <- ggplot(dat, aes(x = depth, y=NG50, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_log10(labels = label_number(suffix = " Mb", 
+                                      scale = (1/1000000)),
+                breaks = c(100000,1000000,10000000,100000000)) +
+  colScale+
+  expand_limits(y=c(100000,100000000))
+
+h242 <- ggplot(dat, aes(x = depth, y=Num_contigs, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale+
+  expand_limits(y = c(30, 10000)) +
+  scale_y_log10(breaks = c(30,100,300,1000,3000,10000))
+
+h243 <- ggplot(dat, aes(x = depth, y=Total_length, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_continuous(labels = label_number(suffix = " Mb", scale = (1/1000000))) +
+  colScale+
+  expand_limits(y = c(250000000, 550000000)) +
+  geom_hline(yintercept = 387500000, linetype = "dashed", color = "black",size= 0.3)
+
+h244 <- ggplot(dat, aes(x = depth, y=Unaligned_length, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale +
+  expand_limits(y = c(1000000, 100000000)) +
+  ylab("Unaligned Length") +
+  scale_y_log10(breaks = c(1000000,10000000,100000000),
+                labels = label_number(suffix = " Mb", 
+                                      scale = (1/1000000),
+                                      accuracy = 1))
+
+#Hifi11kb random genome graphs
+dat <- subset(all_quast, assembly_type == "genome") %>%
+  subset(read_selection == "random") %>%
+  subset(prefix == "hifi11kb")
+
+h111 <- ggplot(dat, aes(x = depth, y=NG50, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_log10(labels = label_number(suffix = " Mb", 
+                                      scale = (1/1000000)),
+                breaks = c(100000,1000000,10000000,100000000)) +
+  colScale+
+  expand_limits(y=c(100000,100000000))
+
+h112 <- ggplot(dat, aes(x = depth, y=Num_contigs, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale +
+  expand_limits(y = c(30, 10000)) +
+  scale_y_log10(breaks = c(30,100,300,1000,3000,10000))
+
+h113 <- ggplot(dat, aes(x = depth, y=Total_length, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_continuous(labels = label_number(suffix = " Mb", scale = (1/1000000))) +
+  colScale +
+  expand_limits(y = c(250000000, 550000000)) +
+  geom_hline(yintercept = 387500000, linetype = "dashed", color = "black",size= 0.3) 
+
+h114 <- ggplot(dat, aes(x = depth, y=Unaligned_length, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale +
+  expand_limits(y = c(1000000, 100000000)) +
+  ylab("Unaligned Length") +
+  scale_y_log10(breaks = c(1000000,10000000,100000000),
+                labels = label_number(suffix = " Mb", 
+                                      scale = (1/1000000),
+                                      accuracy = 1)) +
+  xlab("Depth of Coverage")
+
+dat1 <-  subset(all_quast, assembly_type == "genome") %>%
+  subset(prefix == "clr")
+dat2 <-  subset(all_quast, assembly_type == "genome") %>%
+  subset(prefix == "hifi11kb")
+
+dummy <- ggplot() +
+  geom_line(data=dat1, aes(x = depth, y = Largest_contig, 
+                      group = interaction(rule_name,read_selection),
+                      color = assembly_tool, 
+                      linetype = read_selection)) +
+  geom_line(data = dat2, aes(x=depth, y=Largest_contig, group = interaction(rule_name, read_selection),
+                             color = assembly_tool,
+                             linetype = read_selection)) +
+  scale_colour_manual(name = "Assembly Tools",
+                      values = myColors,
+                      labels = c("Canu","Flye","HiCanu","Hifiasm","Raven", "Wtdbg2")) +
+  scale_linetype(name = "Read Selection")
+
+
+
+legend <- get_legend(
+  dummy + 
+    guides(color = guide_legend(nrow = 2)) +
+    guides(linetype = FALSE) +
+    theme_classic() +
+    theme(legend.position = "bottom")
+  )
+
+
+topSpace <- 0.5
+bottomSpace <- 0.1
+rightSpace <- 0.1
+leftSpace <- 0.1
+
+
+myPlot <- egg::ggarrange(
+  clr1 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  h111 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  h241 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  clr2 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  h112 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  h242 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+    clr3 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+    h113 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank()),
+    h243 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank()),
+  clr4 + theme_bw() + theme_bw() +theme(legend.position="none",
+            plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank()),
+  h114 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank()),
+  h244 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank(),
+            axis.title.x = element_blank()),
+  widths = c(0.39,0.31,0.36),
+  labels = c("                   CLR","  HiFi 11kb","  HiFi 24kb","","","","","","","","",""),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+
+endPlot <- plot_grid(myPlot, legend, nrow = 2, rel_heights = c(1, .09))
+
+ggsave("images/quast/random_quast_3by4.png",
+         width = 7,
+         height = 8,
+         dpi = 300)
+
+```
+
+Graphs for presentation
+
+```{r}
+myPlot <- egg::ggarrange(
+  clr3 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"))+ 
+    xlab("Read Depth"),
+  h113 + theme_bw() +theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank())+ 
+    xlab("Read Depth"),
+  h243 + theme_bw() +theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank())+ 
+    xlab("Read Depth"),
+  widths = c(0.39,0.31,0.36),
+  labels = c("             CLR","  HiFi 11kb","  HiFi 24kb"),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+endPlot <- plot_grid(myPlot, nrow = 1, rel_heights = c(1))
+
+ggsave("images/quast/assembly_length.png",
+         width = 7,
+         height = 4,
+         dpi = 300)
+
+leg <- plot_grid(legend, nrow = 1, rel_heights = c(1))
+
+ggsave("images/quast/legend.png",
+         width = 6,
+         height = 0.7,
+         dpi = 300)
+
+myPlot <- egg::ggarrange(
+  clr2 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  h112 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  h242 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  clr1 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")) + 
+    xlab("Read Depth"),
+  h111 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank())+ 
+    xlab("Read Depth"),
+  h241 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank())+ 
+    xlab("Read Depth"),
+  widths = c(0.39,0.31,0.36),
+  labels = c("                   CLR","  HiFi 11kb","  HiFi 24kb","","",""),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+endPlot <- plot_grid(myPlot, nrow = 1, rel_heights = c(1))
+
+ggsave("images/quast/contig_num_NG50.png",
+         width = 8,
+         height = 4,
+         dpi = 300)
+
+#Longest Graph
+
+dat <- subset(all_quast, assembly_type == "genome") %>%
+  subset(read_selection == "longest") %>%
+  subset(prefix == "clr")
+
+clr1 <- ggplot(dat, aes(x = depth, y=NG50, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_log10(labels = label_number(suffix = " Mb", 
+                                      scale = (1/1000000)),
+                breaks = c(100000,1000000,10000000,100000000)) +
+  colScale +
+  expand_limits(y=c(100000,100000000))
+
+clr2 <- ggplot(dat, aes(x = depth, y=Num_contigs, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale+
+  ylab("Number of Contigs") +
+  expand_limits(y = c(30, 10000)) +
+  scale_y_log10(breaks = c(30,100,300,1000,3000,10000))
+  
+clr3 <- ggplot(dat, aes(x = depth, y=Total_length, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_continuous(labels = label_number(suffix = " Mb", scale = (1/1000000))) +
+  colScale +
+  expand_limits(y = c(250000000, 550000000)) +
+  geom_hline(yintercept = 387500000, linetype = "dashed", color = "black",size= 0.3) +
+  ylab("Total Length")
+
+clr4 <- ggplot(dat, aes(x = depth, y=Num_mismatches_per_100_kbp, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale +
+  expand_limits(y = c(10,1000)) +
+  ylab("Number Mismatches\nper 100 kbp") +
+  scale_y_log10(breaks = c(10,30,100,300,1000))
+
+#Hifi24kb random genome graphs
+dat <- subset(all_quast, assembly_type == "genome") %>%
+  subset(read_selection == "longest") %>%
+  subset(prefix == "hifi24kb")
+
+h241 <- ggplot(dat, aes(x = depth, y=NG50, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_log10(labels = label_number(suffix = " Mb", 
+                                      scale = (1/1000000)),
+                breaks = c(100000,1000000,10000000,100000000)) +
+  colScale+
+  expand_limits(y=c(100000,100000000))
+
+h242 <- ggplot(dat, aes(x = depth, y=Num_contigs, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale+
+  expand_limits(y = c(30, 10000)) +
+  scale_y_log10(breaks = c(30,100,300,1000,3000,10000))
+
+h243 <- ggplot(dat, aes(x = depth, y=Total_length, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_continuous(labels = label_number(suffix = " Mb", scale = (1/1000000))) +
+  colScale+
+  expand_limits(y = c(250000000, 550000000)) +
+  geom_hline(yintercept = 387500000, linetype = "dashed", color = "black",size= 0.3)
+
+h244 <- ggplot(dat, aes(x = depth, y=Num_mismatches_per_100_kbp, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale +
+  expand_limits(y = c(10, 1000)) +
+  ylab("Number Mismatches\nper 100 kbp") +
+  scale_y_log10(breaks = c(10,30,100,300,1000))
+
+#Hifi11kb random genome graphs
+dat <- subset(all_quast, assembly_type == "genome") %>%
+  subset(read_selection == "longest") %>%
+  subset(prefix == "hifi11kb")
+
+h111 <- ggplot(dat, aes(x = depth, y=NG50, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_log10(labels = label_number(suffix = " Mb", 
+                                      scale = (1/1000000)),
+                breaks = c(100000,1000000,10000000,100000000)) +
+  colScale+
+  expand_limits(y=c(100000,100000000))
+
+h112 <- ggplot(dat, aes(x = depth, y=Num_contigs, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale +
+  expand_limits(y = c(30, 10000)) +
+  scale_y_log10(breaks = c(30,100,300,1000,3000,10000))
+
+h113 <- ggplot(dat, aes(x = depth, y=Total_length, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  scale_y_continuous(labels = label_number(suffix = " Mb", scale = (1/1000000))) +
+  colScale +
+  expand_limits(y = c(250000000, 550000000)) +
+  geom_hline(yintercept = 387500000, linetype = "dashed", color = "black",size= 0.3) 
+
+h114 <- ggplot(dat, aes(x = depth, y=Num_mismatches_per_100_kbp, group = interaction(rule_name,read_selection))) +
+  geom_line(aes(color = assembly_tool, linetype = read_selection)) +
+  colScale +
+  expand_limits(y = c(10, 1000)) +
+  ylab("Number Mismatches\nper 100 kbp") +
+  scale_y_log10(breaks = c(10,30,100,300,1000)) +
+  xlab("Depth of Coverage")
+
+dat1 <-  subset(all_quast, assembly_type == "genome") %>%
+  subset(prefix == "clr")
+dat2 <-  subset(all_quast, assembly_type == "genome") %>%
+  subset(prefix == "hifi11kb")
+
+dummy <- ggplot() +
+  geom_line(data=dat1, aes(x = depth, y = Largest_contig, 
+                      group = interaction(rule_name,read_selection),
+                      color = assembly_tool, 
+                      linetype = read_selection)) +
+  geom_line(data = dat2, aes(x=depth, y=Largest_contig, group = interaction(rule_name, read_selection),
+                             color = assembly_tool,
+                             linetype = read_selection)) +
+  scale_colour_manual(name = "Assembly Tools",
+                      values = myColors,
+                      labels = c("Canu","Flye","Hicanu","Hifiasm","Raven", "Wtdbg2")) +
+  scale_linetype(name = "Read Selection")
+
+
+
+legend <- get_legend(
+  dummy + 
+    guides(color = guide_legend(nrow = 2)) +
+    guides(linetype = FALSE) +
+    theme_classic() +
+    theme(legend.position = "bottom")
+  )
+
+
+topSpace <- 0.5
+bottomSpace <- 0.2
+rightSpace <- 0.2
+leftSpace <- 0.2
+
+
+myPlot <- egg::ggarrange(
+  clr1 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  h111 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  h241 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  clr2 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  h112 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+  h242 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+    clr3 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()),
+    h113 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank()),
+    h243 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            axis.title.x = element_blank()),
+  clr4 + theme_bw() + theme_bw() +theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.x = element_blank()),
+  h114 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank()),
+  h244 + theme_bw() + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank(),
+            axis.title.x = element_blank()),
+  widths = c(0.39,0.31,0.36),
+  labels = c("                   CLR","  HiFi 11kb","  HiFi 24kb","","","","","","","","",""),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+
+endPlot <- plot_grid(myPlot, legend, nrow = 2, rel_heights = c(1, .09))
+
+ggsave("images/quast/longest_quast_3by4.png",
+         width = 7,
+         height = 8,
+         dpi = 300)
+
+```
+
+#3x3 graphs.
+
+```{r}
+#=============================================================
+#Num_indels_per_100_kbp - YES min0, max 800
+#Num_misassemblies - YES min0, max 10000
+
+#Num_mismatches,Num indels, num misassemblies
+#defining colours
+myColors <- c("orangered3","darkgoldenrod3","slateblue3","plum3","gray54","green4")
+all_quast$assembly_tool <- as.factor(all_quast$assembly_tool)
+names(myColors) <- levels(all_quast$assembly_tool)
+colScale <- scale_colour_manual(name = "Assembly Tool",values = myColors)
+
+topScale <- 150000000
+botScale <- 0
+
+dat <- subset(all_quast, assembly_type == "genome") %>%
+  subset(read_selection == "random") %>%
+  subset(prefix == "clr")
+ 
+clr1 <- ggplot(dat, aes(x = depth, y = Num_mismatches_per_100_kbp, group = rule_name, color = rule_name)) +
+  geom_line() +
+  expand_limits(y = c(10, 1000)) +
+  ylab("Number Mismatches\nper 100 kbp") +
+  scale_y_log10(breaks = c(10,100,1000)) +
+  colScale
+
+clr2 <- ggplot(dat, aes(x = depth, y = Num_indels_per_100_kbp, group = rule_name, color = rule_name)) +
+  geom_line() +
+  colScale +
+  expand_limits(y = c(0, 800)) +
+  ylab("Number Indels\nper 100 kbp")
+
+clr3 <- ggplot(dat, aes(x = depth, y = Num_misassemblies, group = rule_name, color = rule_name)) +
+  geom_line() +
+  colScale +
+  expand_limits(y = c(0,10000)) +
+  ylab("Number Misassemblies") +
+  xlab("Depth of Coverage")
+
+dat <- subset(all_quast, assembly_type == "genome") %>%
+  subset(read_selection == "random") %>%
+  subset(prefix == "hifi11kb")
+
+h111 <- ggplot(dat, aes(x = depth, y = Num_mismatches_per_100_kbp, group = rule_name, color = rule_name)) +
+  geom_line() +
+  colScale +
+  expand_limits(y = c(10, 1000)) +
+  ylab("Number Mismatches\nper 100 kbp") +
+  scale_y_log10(breaks = c(10,100,1000))
+
+h112 <- ggplot(dat, aes(x = depth, y = Num_indels_per_100_kbp, group = rule_name, color = rule_name)) +
+  geom_line() +
+  colScale +
+  expand_limits(y = c(0, 800))
+
+h113 <- ggplot(dat, aes(x = depth, y = Num_misassemblies, group = rule_name, color = rule_name)) +
+  geom_line() +
+  colScale +
+  expand_limits(y = c(0,10000)) +
+  xlab("Depth of Coverage")
+
+dat <- subset(all_quast, assembly_type == "genome") %>%
+  subset(read_selection == "random") %>%
+  subset(prefix == "hifi24kb")
+
+h241 <- ggplot(dat, aes(x = depth, y = Num_mismatches_per_100_kbp, group = rule_name, color = rule_name)) +
+  geom_line() +
+  colScale +
+  expand_limits(y = c(10, 1000)) +
+  ylab("Number Mismatches\nper 100 kbp") +
+  scale_y_log10(breaks = c(10,100,1000))
+
+h242 <- ggplot(dat, aes(x = depth, y = Num_indels_per_100_kbp, group = rule_name, color = rule_name)) +
+  geom_line() +
+  colScale +
+  expand_limits(y = c(0, 800))
+
+h243 <- ggplot(dat, aes(x = depth, y = Num_misassemblies, group = rule_name, color = rule_name)) +
+  geom_line() +
+  colScale +
+  expand_limits(y = c(0,10000)) +
+  xlab("Depth of Coverage")
+
+testPlot <- egg::ggarrange(clr1 + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                                   axis.title.x = element_blank(),
+                                   axis.text.x = element_blank(),
+                                   axis.ticks.x = element_blank()),
+                           h111 + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                                   axis.text = element_blank(),
+                                   axis.ticks = element_blank(),
+                                   axis.title = element_blank()),
+                           h241 + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                                   axis.text = element_blank(),
+                                   axis.ticks = element_blank(),
+                                   axis.title = element_blank()),
+                           clr2 + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                                   axis.text.x = element_blank(),
+                                   axis.ticks.x = element_blank(),
+                                   axis.title.x = element_blank()),
+                           h112 + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                                   axis.text = element_blank(),
+                                   axis.ticks = element_blank(),
+                                   axis.title = element_blank()),
+                           h242 + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                                   axis.text = element_blank(),
+                                   axis.ticks = element_blank(),
+                                   axis.title = element_blank()),
+                           clr3 + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+                           h113 + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                                   axis.text.y = element_blank(),
+                                   axis.ticks.y = element_blank(),
+                                   axis.title.y = element_blank()),
+                           h243 + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(rightSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                                   axis.text.y = element_blank(),
+                                   axis.ticks.y = element_blank(),
+                                   axis.title.y = element_blank()),
+                           widths = c(0.39, 0.31, 0.36),
+                           labels = c("             CLR", "HiFi 11kb", "Hifi 24kb","","","","","",""),
+                           label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+
+#testEnd <- plot_grid(myPlot, legend, nrow = 2, rel_heights = c(1, .09))
+#testEnd <- plot_grid(testPlot)
+endPlot <- plot_grid(testPlot, legend, nrow = 2, rel_heights = c(1, .09))
+
+ggsave("images/quast/random_quast_3x3.png",
+         width = 7,
+         height = 6,
+         dpi = 300)
+
+```
+
+
+
+Polishing results - Put alongside other graphs. 
+
+```{r}
+#create Data set
+
+name <- c("Canu 50x\nRandom","Canu 50x\nRandom","Canu 50x\nRandom",
+          "Flye 50x\nRandom","Flye 50x\nRandom","Flye 50x\nRandom",
+          "Flye 125x\nLongest","Flye 125x\nLongest","Flye 125x\nLongest",
+          "Raven 50x\nRandom","Raven 50x\nRandom","Raven 50x\nRandom",
+          "Raven 150x\nLongest","Raven 150x\nLongest","Raven 150x\nLongest",
+          "Wtdbg2 50x\nRandom","Wtdbg2 50x\nRandom","Wtdbg2 50x\nRandom")
+
+assembly_tool <- c("canu", "canu", "canu", 
+                   "flye", "flye", "flye",
+                   "flye", "flye", "flye",
+                   "raven", "raven", "raven",
+                   "raven", "raven", "raven",
+                   "wtdbg2","wtdbg2","wtdbg2")
+
+round <- c(0,1,2,
+           0,1,2,
+           0,1,2,
+           0,1,2,
+           0,1,2,
+           0,1,2)
+
+mismatches <- c(47.69,48.34,50.1,
+                31.86,29.83,29.51,
+                25.93,24.49,27.0,
+                83.63,56.09,56.01,
+                103.9,66.64,65.62,
+                191.89,98.06,90.08)
+
+misassemblies <- c(1330,1249,1257,
+                   819,770,779,
+                   704,681,680,
+                   1643,1612,1588,
+                   2050,2021,1987,
+                   564,865,947)
+num_indels <- c(35.89,65.15,66.27,
+                46.81,64.13,64.78,
+                43.17,55.54,57.53,
+                213.87,109.6,103.1,
+                251.84,105.55,98.81,
+                247.53,192.52,170.23)
+
+
+polish <- data.frame(name, assembly_tool,round,mismatches,misassemblies,num_indels)
+
+polish$round <- as.factor(polish$round)
+
+a <- ggplot(data = polish, aes(x = name, y = mismatches, color = assembly_tool)) + 
+  geom_point(aes(shape = round), position = position_dodge(width = 0.6), size = 3) +
+  labs(x = "Assembly",
+       y = "Number Mismatches\nper 100 kbp") +
+  colScale +
+  theme_bw() +
+  scale_shape_manual(values = c("\u25CF","\u2460","\u2461")) +
+    theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 0.65),
+        legend.position = "none") +
+  expand_limits(y=c(0,250))
+  
+
+
+b <- ggplot(data = polish, aes(x = name, y = num_indels, color = assembly_tool)) + 
+  geom_point(aes(shape = round), position = position_dodge(width = 0.6), size = 3) +
+  labs(x = "Assembly",
+       y = "Number Indels\nper 100 kbp") +
+  colScale +
+  theme_bw() +
+  scale_shape_manual(values = c("\u25CF","\u2460","\u2461")) +
+    theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 0.65),
+        legend.position = "none") +
+  expand_limits(y=c(0,300)) + 
+  labs(shape = "Polishing\nRound",
+       color = "Assembly\nTool")
+
+c <- ggplot(data = polish, aes(x = name, y = misassemblies, color = assembly_tool)) + 
+  geom_point(aes(shape = round), position = position_dodge(width = 0.6), size = 3) +
+  labs(x = "Assembly",
+       y = "Number Misassemblies") +
+  colScale +
+  theme_bw() +
+  scale_shape_manual(name = "Polishing Round",values = c("\u25CF","\u2460","\u2461")) +
+    theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 0.65),
+        legend.position = "none") +
+  expand_limits(y=c(0,2500))
+
+legend <- get_legend(
+   c + 
+    theme_bw() +
+     guides(color = guide_legend(nrow=2)) +
+     guides(shape = guide_legend(nrow=3)) +
+    theme(legend.position = "bottom")
+  )
+
+
+polished <- ggplot() +
+geom_point(data = polished_lai, aes(x = name, y = LAI, color = tool, shape = round), size = 3,
+             position = position_dodge(width = 0.6))  +
+  geom_point(data = polished_lai, aes(x = name, y = LAI, color = tool, shape = round), size = 3,
+             position = position_dodge(width = 0.6)) + 
+  scale_shape_manual(values = c("\u25CF","\u2460","\u2461")) +
+  scale_colour_manual(name = "Assembly Tool", values = myColors) + 
+  xlab("Assembly") + 
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 0.65),
+        legend.position = "none")
+
+testPlot <- egg::ggarrange(a + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                                   axis.title.x = element_blank(),
+                                   axis.text.x = element_blank(),
+                                   axis.ticks.x = element_blank()),
+                           b + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                                   axis.text.x = element_blank(),
+                                   axis.ticks.x = element_blank(),
+                                   axis.title.x = element_blank()),
+                           c + theme_bw() + 
+                             theme(legend.position = "none",
+                                   plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+                           widths = c(1),
+                           heights = c(0.33,0.33,0.34),
+                           labels = c("A","B","C"),
+                           label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+endPlot <- plot_grid(testPlot, legend, nrow = 2, rel_heights = c(1, .12))
+
+ggsave("images/quast/polished_quast.png",
+         width = 5.5,
+         height = 7,
+         dpi = 300)
+
+```
+
+

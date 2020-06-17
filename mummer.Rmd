@@ -1,0 +1,942 @@
+---
+title: "mummer"
+author: "Chelsea Matthews"
+date: "24 April 2020"
+output:
+  html_document:
+      code_folding: "show"
+      number_sections: TRUE
+      toc: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+											results = "asis",
+											message = FALSE, warning = FALSE,
+											error = FALSE)
+```
+
+Loading Libraries
+
+```{r}
+library(plyr)
+library(tidyverse)
+library(ggplot2)
+library(grImport)
+library(XML)
+library(kableExtra)
+library(cluster)
+library(purrr)
+library(data.table)
+library(ggpubr)
+library(scales)
+library(viridis)
+library(dplyr)
+library(cowplot) 
+library(egg)
+library(fuzzyjoin)
+```
+
+# Hifi Genome SNP Graphs
+
+```{r}
+hifi_g_snp_files <- dir("../pacbio_hifi/mummer/genome", recursive=TRUE, full.names=TRUE, pattern=".snps$")
+clr_g_snp_files <- dir("../pacbio_clr/mummer/genome", recursive=TRUE, full.names=TRUE, pattern=".snps$")
+hifi_g_snp_files <- c(hifi_g_snp_files,clr_g_snp_files)
+hifi_g_snp_files <- hifi_g_snp_files[sapply(hifi_g_snp_files, file.size) > 0]
+
+#filter paths here to reduce computation per graph. 
+hifi_g_snp_files <- hifi_g_snp_files[!str_detect(hifi_g_snp_files,pattern="longest")]
+
+
+hifi_g_snp <- vector(mode = "list", length = length(hifi_g_snp_files))
+
+for( i in 1:length(hifi_g_snp_files)) {
+  hifi_g_snp[[i]] <- read.delim(hifi_g_snp_files[[i]], header=FALSE)
+}
+
+colNames <- c("ref_loc", 
+              "sub_ref", 
+              "sub_qry", 
+              "qry_loc", 
+              "buffer", 
+              "distance", 
+              "length_ref_seq", 
+              "length_qry_seq",
+              "direction_ref",
+              "direction_qry", 
+              "ref_tag",
+              "qid")
+
+newCols <- c("read_type", 
+             "assembly_type", 
+             "assembly_tool", 
+             "read_selection", 
+             "prefix", 
+             "bbduk_cov", 
+             "bbduk_kmer", 
+             "depth")
+
+for( i in 1:length(hifi_g_snp)) {
+  names(hifi_g_snp[[i]])[1:12] <- colNames
+  hifi_g_snp[[i]][,newCols] <- NA
+
+  temp <- unlist(strsplit(hifi_g_snp_files[i], "/"))
+  temp <- unlist(strsplit(temp, "_"))
+  hifi_g_snp[[i]]$read_type <- temp[match("pacbio", temp) +1]
+  hifi_g_snp[[i]]$assembly_type <- temp[match("mummer", temp) +1]
+  hifi_g_snp[[i]]$assembly_tool <- temp[match("assemblytool", temp) +1]
+  hifi_g_snp[[i]]$read_selection <- temp[match("readselect", temp) +1]
+  hifi_g_snp[[i]]$prefix <- temp[match("prefix", temp) +1]
+  hifi_g_snp[[i]]$bbduk_kmer <- temp[match("kmer", temp) +1]
+  hifi_g_snp[[i]]$bbduk_cov <- temp[match("cov", temp) +1]
+  temp <- unlist(strsplit(temp, "\\."))
+  hifi_g_snp[[i]]$depth <- temp[match("depth", temp) +1]
+}
+
+header <- colnames(hifi_g_snp[[1]])
+
+#create vector of break points and bin names
+binSize <- 40000
+b <- seq(from = binSize, to = 387424359, by = binSize)
+b <- c("-Inf", b)
+b <- c(b, "Inf")
+names <- seq(from = 1, to = length(b)-1, by =1)
+
+#run this to get data to enter into getNewPos function switch. 
+  len_seq <- as.data.frame(unique(hifi_g_snp[[29]]$length_ref_seq)) 
+  names(len_seq)[1] <- "length"
+  len_seq[,"cum_length"] <- (cumsum(len_seq$length))
+  len_seq <- len_seq %>% mutate(cum_length=lag(cum_length))
+  len_seq[,"name"] <- unique(hifi_g_snp[[29]]$ref_tag)
+  
+getNewPos <- function(rowNo,listref){
+  row <- hifi_g_snp[[listref]][rowNo,]
+  numZeros <- switch(as.character(row$ref_tag),
+                     "CM003922.2" = 0,
+                     "CM003923.2" = 44512328,
+                     "CM003924.2" = 81183608,
+                     "CM003925.2" = 120535098,
+                     "CM003926.2" = 156702349,
+                     "CM003927.2" = 187583892,
+                     "CM003928.2" = 219236697,
+                     "CM003929.2" = 249127714,
+                     "CM003930.2" = 278925251,
+                     "CM003931.2" = 303257619,
+                     "CM003932.2" = 328384833,
+                     "CM003933.2" = 361268003)
+  return(numZeros+row$ref_loc)
+}
+
+adjustRefPos <- function(listNum){
+
+  hifi_g_snp[[listNum]]$newPos <- lapply(1:nrow(hifi_g_snp[[listNum]]), FUN=getNewPos, listref = listNum)
+  hifi_g_snp[[listNum]]$newPos <- as.numeric(hifi_g_snp[[listNum]]$newPos)
+  
+#cut data
+  hifi_g_snp[[listNum]]$snpCounts <- cut(hifi_g_snp[[listNum]]$newPos, breaks=b, labels=names)
+
+#generate a frequency table including only
+  test <- as.data.frame(table(hifi_g_snp[[listNum]]$snpCounts))
+#Add columns describing datatype to test.  
+  return(test)
+}
+
+
+#create bins datatable
+bins <- list()
+
+for(i in 1:length(hifi_g_snp)){
+ bins[[i]] <- data.frame(adjustRefPos(i))
+}
+
+data <- rbindlist(bins, idcol = "index")
+
+breaks = c(0,44512328,81183608,120535098,
+                              156702349,187583892,219236697,249127714,
+                              278925251,303257619,328384833,361268003)
+breaks <- as.integer(breaks/40000)
+
+save(data,file="snpData_Random.Rda")
+load("snpData_Random.Rda")
+data$index <- as.factor(data$index)
+yaxislabs <- c("one","2","3","5")
+
+#renaming each entry
+assembly_names <- vector(mode = "character", length = length(hifi_g_snp_files))
+
+assembly_names <- data.frame(prefix=as.character(character()),
+                 assembly_tool=character(), 
+                 Coverage=character(),
+                 polishround = character(),
+                 readselect = character(),
+                 stringsAsFactors=FALSE) 
+  
+for( i in 1:length(hifi_g_snp_files)) {
+  temp <- unlist(strsplit(hifi_g_snp_files[i], "/"))
+  temp <- unlist(strsplit(temp, "_"))
+  temp <- unlist(strsplit(temp, "\\."))
+  
+assembly_names$prefix = temp[match("pacbio", temp) +1]
+  
+  hifi_g_snp[[i]]$read_type <- temp[match("pacbio", temp) +1]
+  hifi_g_snp[[i]]$assembly_type <- temp[match("mummer", temp) +1]
+  hifi_g_snp[[i]]$assembly_tool <- temp[match("assemblytool", temp) +1]
+  hifi_g_snp[[i]]$read_selection <- temp[match("readselect", temp) +1]
+  hifi_g_snp[[i]]$prefix <- temp[match("prefix", temp) +1]
+  hifi_g_snp[[i]]$bbduk_kmer <- temp[match("kmer", temp) +1]
+  hifi_g_snp[[i]]$bbduk_cov <- temp[match("cov", temp) +1]
+
+  hifi_g_snp[[i]]$depth <- temp[match("depth", temp) +1]
+}
+
+#graphed log(frequency) as no contrast using untransformed frequency
+ggplot(data, aes(x=Var1, y=index)) + 
+  geom_tile(aes(fill = log10(1+Freq))) +
+  scale_fill_gradient(low = "white", high = "navy") +
+  labs(fill="log10(SNP Density)",
+       x = "Chromosome") +
+  scale_x_discrete(breaks = breaks,
+                   labels = c("1","2","3","4","5","6","7","8","9","10","11","12")) +
+  scale_y_discrete(labels = seq(2,56,1))
+
+
+
+ggsave("images/hifi_mummerplot/snpdensLOG10v3.png",
+         width = 8,
+         height = 3,
+         dpi = 300)
+
+```
+
+Graphing .coords files. 
+
+```{r}
+hifi_files <- dir("../pacbio_hifi/mummer/genome", recursive=TRUE, full.names=TRUE, pattern=".coords$")
+#clr_g_snp_files <- dir("../pacbio_clr/mummer/genome", recursive=TRUE, full.names=TRUE, pattern=".snps$")
+
+hifi <- read.delim(hifi_files, header = FALSE)
+
+#Make intervals.
+
+#convert positions to match the genome using code from snps data.
+
+#move through file and sum total bases that match in each interval.
+
+#calculate depth of interval
+
+
+```
+
+
+
+```{r}
+#Reading data in
+clr_delta_files <- dir("../pacbio_clr/mummer", recursive=TRUE, full.names=TRUE, pattern=".delta$")
+clr_delta_files <- clr_delta_files[sapply(clr_delta_files, file.size) > 0]
+
+readDelta <- function(deltafile){
+  lines = scan(deltafile, 'a', sep='\n', quiet=TRUE)
+  lines = lines[-1]
+  lines.l = strsplit(lines, ' ')
+  lines.len = lapply(lines.l, length) %>% as.numeric
+  lines.l = lines.l[lines.len != 1]
+  lines.len = lines.len[lines.len != 1]
+  head.pos = which(lines.len == 4)
+  head.id = rep(head.pos, c(head.pos[-1], length(lines.l)+1)-head.pos)
+  mat = matrix(as.numeric(unlist(lines.l[lines.len==7])), 7)
+  res = as.data.frame(t(mat[1:5,]))
+  colnames(res) = c('rs','re','qs','qe','error')
+  res$qid = unlist(lapply(lines.l[head.id[lines.len==7]], '[', 2))
+  res$rid = unlist(lapply(lines.l[head.id[lines.len==7]], '[', 1)) %>% gsub('^>', '', .)
+  res$strand = ifelse(res$qe-res$qs > 0, '+', '-')
+  res
+}
+
+clr_delta <- vector(mode = "list", length = length(clr_delta_files))
+
+for( i in 1:length(clr_delta_files)) {
+  clr_delta[[i]] <- readDelta(clr_delta_files[[i]])
+  }
+
+
+diagMum <- function(df){
+    ## Find best qid order
+    rid.o = df %>% group_by(qid, rid) %>% summarize(base=sum(abs(qe-qs)),
+                                                    rs=weighted.mean(rs, abs(qe-qs))) %>%
+        ungroup %>% arrange(desc(base)) %>% group_by(qid) %>% do(head(., 1)) %>%
+        ungroup %>% arrange(desc(rid), desc(rs)) %>%
+        mutate(qid=factor(qid, levels=unique(qid)))
+    ## Find best qid strand
+    major.strand = df %>% group_by(qid) %>%
+        summarize(major.strand=ifelse(sum(sign(qe-qs)*abs(qe-qs))>0, '+', '-'),
+                  maxQ=max(c(qe, qs)))
+    merge(df, major.strand) %>% mutate(qs=ifelse(major.strand=='-', maxQ-qs, qs),
+                                       qe=ifelse(major.strand=='-', maxQ-qe, qe),
+                                       qid=factor(qid, levels=levels(rid.o$qid)))
+}
+
+```
+
+## Creates all mummer graphs for clr assemblies
+
+```{r}
+
+# Mummerplot Graphs
+
+for( i in 1:length(clr_delta)) {
+  
+  test = diagMum(clr_delta[[i]])
+
+  title <- unlist(strsplit(clr_delta_files[i], "_"))
+  title <- unlist(strsplit(title, "\\."))
+  title <- unlist(strsplit(title, "/"))
+  
+plot <- ggplot(test, aes(x=rs, xend=re, y=qs, yend=qe, colour=strand)) +
+    geom_segment() + geom_point(alpha=.5) + theme_bw() + 
+    facet_grid(qid~., scales='free', space='free', switch='y') +
+    theme(strip.text.y=element_text(angle=180, size=5), strip.background=element_blank(),
+          legend.position=c(.99,.01), legend.justification=c(1,0),
+          axis.text.y=element_blank(), axis.ticks.y=element_blank()) +
+    xlab('reference sequence') + ylab('assembly') +
+  scale_colour_brewer(palette='Set1') +
+    ggtitle(paste0(title[11], " ",title[20], " cov with ", title[13], " reads"))
+  
+  name <- paste0("images/clr_mummerplot/", title[5], "_", title[11],"_",title[20], "cov_",title[13],".png")
+ 
+   ggsave(name,
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+  
+}
+
+```
+
+
+
+```{r}
+clr_snp_files <- dir("../pacbio_clr/mummer", recursive=TRUE, full.names=TRUE, pattern=".snps$")
+clr_snp_files <- clr_snp_files[sapply(clr_snp_files, file.size) > 0]
+
+clr_snp <- vector(mode = "list", length = length(clr_snp_files))
+
+for( i in 1:length(clr_snp_files)) {
+  clr_snp[[i]] <- read.delim(clr_snp_files[[i]], header=FALSE)
+}
+
+colNames <- c("ref_loc", 
+              "sub_ref", 
+              "sub_qry", 
+              "qry_loc", 
+              "buffer", 
+              "distance", 
+              "length_ref_seq", 
+              "length_qry_seq",
+              "direction_ref",
+              "direction_qry", 
+              "ref_tag",
+              "qid")
+
+newCols <- c("read_type", 
+             "assembly_type", 
+             "assembly_tool", 
+             "read_selection", 
+             "prefix", 
+             "bbduk_cov", 
+             "bbduk_kmer", 
+             "depth")
+
+for( i in 1:length(clr_snp)) {
+  names(clr_snp[[i]])[1:12] <- colNames
+  clr_snp[[i]][,newCols] <- NA
+
+  temp <- unlist(strsplit(clr_snp_files[i], "/"))
+  temp <- unlist(strsplit(temp, "_"))
+  clr_snp[[i]]$read_type <- temp[match("pacbio", temp) +1]
+  clr_snp[[i]]$assembly_type <- temp[match("mummer", temp) +1]
+  clr_snp[[i]]$assembly_tool <- temp[match("assemblytool", temp) +1]
+  clr_snp[[i]]$read_selection <- temp[match("readselect", temp) +1]
+  clr_snp[[i]]$prefix <- temp[match("prefix", temp) +1]
+  clr_snp[[i]]$bbduk_kmer <- temp[match("kmer", temp) +1]
+  clr_snp[[i]]$bbduk_cov <- temp[match("cov", temp) +1]
+  temp <- unlist(strsplit(temp, "\\."))
+  clr_snp[[i]]$depth <- temp[match("depth", temp) +1]
+}
+
+header <- colnames(clr_snp[[1]])
+
+#create vector of break points
+b <- seq(from = 20000, to = 387424359, by = 20000)
+b <- c("-Inf", b)
+b <- c(test, "Inf")
+
+#create vector of bin names
+names <- as.character(seq(from = 1, to = length(b)-1, by = 1))
+
+#cut data
+clr_snp[[33]]$snpCounts <- cut(clr_snp[[33]]$ref_loc, breaks=b, labels=names)
+
+#generate a frequency table including only
+
+ggplot(test, aes(x=Var1, y = Freq)) + 
+  geom_dotplot()
+
+
+#stick lists together into a single list using the existing headers
+clr_snp_graph <- reduce(clr_snp, merge, by = header, all = TRUE)
+
+clr_snp_graph$depth <- as.numeric(clr_snp_graph$depth)
+```
+
+#attempt to graph snps on top of mummer graph
+
+```{r}
+
+snp_num <- 5
+dlt_num <- 5
+  
+  test = diagMum(clr_delta[[dlt_num]])
+
+  title <- unlist(strsplit(clr_delta_files[dlt_num], "_"))
+  title <- unlist(strsplit(title, "\\."))
+  title <- unlist(strsplit(title, "/"))
+  
+
+
+ggplot() +
+  geom_segment(data = clr_delta[[dlt_num]], aes(x=rs, xend=re, y=qs, yend=qe, colour=strand)) + 
+  theme_bw() + 
+  facet_grid(qid~., scales='free', space='free', switch='y') +
+  theme(strip.text.y=element_text(angle=180, size=5), strip.background=element_blank(),
+          legend.position=c(.99,.01), legend.justification=c(1,0),
+          axis.text.y=element_blank(), axis.ticks.y=element_blank()) +
+  xlab('reference sequence') + ylab('assembly') +
+  scale_colour_brewer(palette='Set1') +
+  ggtitle(paste0(title[11], " ",title[20], " cov with ", title[13], " reads")) +
+  geom_point(data = clr_snp[[snp_num]], aes(x=ref_loc, y=qry_loc), colour = "black", shape =1, size=1) 
+
+
+  name <- paste0("images/clr_mummerplot/", title[5], "_", title[11],"_",title[20], "cov_",title[13],".png")
+ 
+```
+
+
+
+# Mummer Hifi graphs
+
+```{r}
+hifi_delta_files <- dir("../pacbio_hifi/mummer/chloroplast/", recursive=TRUE, full.names=TRUE, pattern=".delta$")
+hifi_delta_files <- hifi_delta_files[sapply(hifi_delta_files, file.size) > 0]
+
+#Select only files that don't contain hifiasmgfa
+hifi_delta_files_norm<-str_subset(hifi_delta_files, "hifiasmgfa", negate = TRUE) %>%
+  str_subset("hifiasm", negate = TRUE)
+hifi_delta_files_gfa <- str_subset(hifi_delta_files, "hifiasmgfa", negate = FALSE)
+
+readDelta <- function(deltafile){
+  lines = scan(deltafile, 'a', sep='\n', quiet=TRUE)
+  lines = lines[-1]
+  lines.l = strsplit(lines, ' ')
+  lines.len = lapply(lines.l, length) %>% as.numeric
+  lines.l = lines.l[lines.len != 1]
+  lines.len = lines.len[lines.len != 1]
+  head.pos = which(lines.len == 4)
+  head.id = rep(head.pos, c(head.pos[-1], length(lines.l)+1)-head.pos)
+  mat = matrix(as.numeric(unlist(lines.l[lines.len==7])), 7)
+  res = as.data.frame(t(mat[1:5,]))
+  colnames(res) = c('rs','re','qs','qe','error')
+  res$qid = unlist(lapply(lines.l[head.id[lines.len==7]], '[', 2))
+  res$rid = unlist(lapply(lines.l[head.id[lines.len==7]], '[', 1)) %>% gsub('^>', '', .)
+  res$strand = ifelse(res$qe-res$qs > 0, '+', '-')
+  res
+}
+
+hifi_delta_norm <- vector(mode = "list", length = length(hifi_delta_files_norm))
+hifi_delta_gfa <- vector(mode = "list", length = length(hifi_delta_files_gfa))
+
+for( i in 1:length(hifi_delta_files_norm)) {
+  hifi_delta_norm[[i]] <- readDelta(hifi_delta_files_norm[[i]])
+  }
+
+for( i in 1:length(hifi_delta_files_gfa)) {
+  hifi_delta_gfa[[i]] <- readDelta(hifi_delta_files_gfa[[i]])
+  }
+
+diagMum <- function(df){
+    ## Find best qid order
+    rid.o = df %>% group_by(qid, rid) %>% summarize(base=sum(abs(qe-qs)),
+                                                    rs=weighted.mean(rs, abs(qe-qs))) %>%
+        ungroup %>% arrange(desc(base)) %>% group_by(qid) %>% do(head(., 1)) %>%
+        ungroup %>% arrange(desc(rid), desc(rs)) %>%
+        mutate(qid=factor(qid, levels=unique(qid)))
+    ## Find best qid strand
+    major.strand = df %>% group_by(qid) %>%
+        summarize(major.strand=ifelse(sum(sign(qe-qs)*abs(qe-qs))>0, '+', '-'),
+                  maxQ=max(c(qe, qs)))
+    merge(df, major.strand) %>% mutate(qs=ifelse(major.strand=='-', maxQ-qs, qs),
+                                       qe=ifelse(major.strand=='-', maxQ-qe, qe),
+                                       qid=factor(qid, levels=levels(rid.o$qid)))
+}
+
+
+
+# Mummerplot Graphs 
+
+for( i in 1:length(hifi_delta_norm)) {
+  
+  test = diagMum(hifi_delta_norm[[i]])
+
+  title <- unlist(strsplit(hifi_delta_files_norm[i], "_"))
+  title <- unlist(strsplit(title, "\\."))
+  title <- unlist(strsplit(title, "/"))
+  
+ggplot(test, aes(x=rs, xend=re, y=qs, yend=qe, colour=strand)) +
+    geom_segment() + geom_point(alpha=.5) + theme_bw() + 
+    facet_grid(qid~., scales='free', space='free', switch='y') +
+    theme(strip.text.y=element_text(angle=180, size=5), strip.background=element_blank(),
+          legend.position=c(.99,.01), legend.justification=c(1,0),
+          axis.text.y=element_blank(), axis.ticks.y=element_blank()) +
+    xlab('reference sequence') + ylab('assembly') +
+  scale_colour_brewer(palette='Set1') +
+    ggtitle(paste0(title[10], " ",title[19], " cov with ", title[12], " reads"))
+  
+  name <- paste0("images/hifi_mummerplot/", title[10], "_", title[12],"_",title[19], "cov_",title[6],".png")
+  ggsave(name,
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+}
+
+for( i in 1:length(hifi_delta_gfa)) {
+  
+  test = diagMum(hifi_delta_gfa[[i]])
+
+  title <- unlist(strsplit(hifi_delta_files_gfa[i], "_"))
+  title <- unlist(strsplit(title, "\\."))
+  title <- unlist(strsplit(title, "/"))
+  
+ggplot(test, aes(x=rs, xend=re, y=qs, yend=qe, colour=strand)) +
+    geom_segment() + geom_point(alpha=.5) + theme_bw() + 
+    facet_grid(qid~., scales='free', space='free', switch='y') +
+    theme(strip.text.y=element_text(angle=180, size=5), strip.background=element_blank(),
+          legend.position=c(.99,.01), legend.justification=c(1,0),
+          axis.text.y=element_blank(), axis.ticks.y=element_blank()) +
+    xlab('reference sequence') + ylab('assembly') +
+  scale_colour_brewer(palette='Set1') +
+    ggtitle(paste0(title[5], " ",title[21], " cov with ", title[14], " reads", title[11], title[12]))
+  
+  name <- paste0("images/hifi_mummerplot/gfa_", title[5], "_", title[11],title[12],"_", title[21], "cov_",title[14],".png")
+  ggsave(name,
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+}
+
+```
+
+
+# clr SNPs 
+
+```{r}
+clr_snp_files <- dir("../pacbio_clr/mummer", recursive=TRUE, full.names=TRUE, pattern=".snps$")
+clr_snp_files <- clr_snp_files[sapply(clr_snp_files, file.size) > 0]
+
+clr_snp <- vector(mode = "list", length = length(clr_snp_files))
+
+for( i in 1:length(clr_snp_files)) {
+  clr_snp[[i]] <- read.delim(clr_snp_files[[i]], header=FALSE)
+}
+
+colNames <- c("ref_pos", 
+              "sub_ref", 
+              "sub_qry", 
+              "ref_qry", 
+              "buffer", 
+              "distance", 
+              "length_ref_seq", 
+              "length_qry_seq",
+              "direction_ref",
+              "direction_qry", 
+              "ref_tag",
+              "qry_tag")
+
+newCols <- c("read_type", 
+             "assembly_type", 
+             "assembly_tool", 
+             "read_selection", 
+             "prefix", 
+             "bbduk_cov", 
+             "bbduk_kmer", 
+             "depth")
+
+for( i in 1:length(clr_snp)) {
+  names(clr_snp[[i]])[1:12] <- colNames
+  clr_snp[[i]][,newCols] <- NA
+
+  temp <- unlist(strsplit(clr_snp_files[i], "/"))
+  temp <- unlist(strsplit(temp, "_"))
+  clr_snp[[i]]$read_type <- temp[match("pacbio", temp) +1]
+  clr_snp[[i]]$assembly_type <- temp[match("mummer", temp) +1]
+  clr_snp[[i]]$assembly_tool <- temp[match("assemblytool", temp) +1]
+  clr_snp[[i]]$read_selection <- temp[match("readselect", temp) +1]
+  clr_snp[[i]]$prefix <- temp[match("prefix", temp) +1]
+  clr_snp[[i]]$bbduk_kmer <- temp[match("kmer", temp) +1]
+  clr_snp[[i]]$bbduk_cov <- temp[match("cov", temp) +1]
+  temp <- unlist(strsplit(temp, "\\."))
+  clr_snp[[i]]$depth <- temp[match("depth", temp) +1]
+}
+
+header <- colnames(clr_snp[[1]])
+
+#stick lists together into a single list using the existing headers
+clr_snp_graph <- reduce(clr_snp, merge, by = header, all = TRUE)
+
+clr_snp_graph$depth <- as.numeric(clr_snp_graph$depth)
+
+stat_box_data <- function(y, upper_limit = max(iris$Sepal.Length) * 1.15) {
+  return( 
+    data.frame(
+      y = 0.95 * upper_limit,
+      label = paste(length(y))
+    )
+  )
+}
+
+#code for stat summary section from https://medium.com/@gscheithauer/how-to-add-number-of-observations-to-a-ggplot2-boxplot-b22710f7ef80
+
+#subset the graph
+canu_clr_graph <- subset(clr_snp_graph, assembly_tool == "canu") %>% subset(read_selection == "longest")
+
+vert_labs_loc = -30
+
+ggplot(canu_clr_graph, aes(x = factor(depth), y = ref_pos)) +
+    geom_point() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = 0.5,
+               vjust = vert_labs_loc) + 
+  scale_y_continuous(limits = c(0, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in canu assemblies", 
+       x="Depth of coverage",
+       y="SNP Location") 
+
+ggsave("images/clr_snps/canu_snps_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+
+raven_clr_graph <- subset(clr_snp_graph, assembly_tool == "raven") %>% subset(read_selection == "longest")
+
+ggplot(raven_clr_graph, aes(x = factor(depth), y = ref_pos)) +
+    geom_violin(trim = FALSE,
+                scale = "count",
+               width = 1)+
+    geom_point() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = 0.5,
+               vjust = -25) + 
+  scale_y_continuous(limits = c(-50000, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in raven assemblies", 
+       x="Depth of coverage",
+       y="SNP Location") 
+
+ggsave("images/clr_snps/raven_snps_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+
+flye_clr_graph <- subset(clr_snp_graph, assembly_tool == "flye") %>% subset(read_selection == "longest")
+
+ggplot(flye_clr_graph, aes(x = factor(depth), y = ref_pos)) +
+    geom_violin(trim = FALSE,
+                scale = "count",
+               width = 1)+
+    geom_point() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = 0.5,
+               vjust = -25) + 
+  scale_y_continuous(limits = c(-50000, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in flye assemblies", 
+       x="Depth of coverage",
+       y="SNP Location") 
+
+ggsave("images/clr_snps/flye_snps_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+```
+
+## Hifi SNP graphs
+
+```{r}
+hifi_snp_files <- dir("../pacbio_hifi/mummer", recursive=TRUE, full.names=TRUE, pattern=".snps$")
+hifi_snp_files <- hifi_snp_files[sapply(hifi_snp_files, file.size) > 0]
+
+hifi_snp <- vector(mode = "list", length = length(hifi_snp_files))
+
+for( i in 1:length(hifi_snp_files)) {
+  hifi_snp[[i]] <- read.delim(hifi_snp_files[[i]], header=FALSE)
+}
+
+colNames <- c("ref_pos", 
+              "sub_ref", 
+              "sub_qry", 
+              "ref_qry", 
+              "buffer", 
+              "distance", 
+              "length_ref_seq", 
+              "length_qry_seq",
+              "direction_ref",
+              "direction_qry", 
+              "ref_tag",
+              "qry_tag")
+
+newCols <- c("read_type", 
+             "assembly_type", 
+             "assembly_tool",
+             "gfa_type", 
+             "read_selection", 
+             "prefix", 
+             "bbduk_cov", 
+             "bbduk_kmer", 
+             "depth")
+
+for( i in 1:length(hifi_snp)) {
+  names(hifi_snp[[i]])[1:12] <- colNames
+  hifi_snp[[i]][,newCols] <- NA
+
+  temp <- unlist(strsplit(hifi_snp_files[i], "/"))
+  temp <- unlist(strsplit(temp, "_"))
+  hifi_snp[[i]]$read_type <- temp[match("pacbio", temp) +1]
+  hifi_snp[[i]]$assembly_type <- temp[match("mummer", temp) +1]
+  hifi_snp[[i]]$assembly_tool <- temp[match("assemblytool", temp) +1]
+  hifi_snp[[i]]$gfa_type <- paste0(temp[match("gfatype", temp) +1],temp[match("gfatype", temp) +2])
+  hifi_snp[[i]]$read_selection <- temp[match("readselect", temp) +1]
+  hifi_snp[[i]]$prefix <- temp[match("prefix", temp) +1]
+  hifi_snp[[i]]$bbduk_kmer <- temp[match("kmer", temp) +1]
+  hifi_snp[[i]]$bbduk_cov <- temp[match("cov", temp) +1]
+  temp <- unlist(strsplit(temp, "\\."))
+  hifi_snp[[i]]$depth <- temp[match("depth", temp) +1]
+}
+
+header <- colnames(hifi_snp[[1]])
+
+#stick lists together into a single list using the existing headers
+hifi_snp_graph <- reduce(hifi_snp, merge, by = header, all = TRUE)
+
+hifi_snp_graph$depth <- as.numeric(hifi_snp_graph$depth)
+
+stat_box_data <- function(y, upper_limit = max(iris$Sepal.Length) * 1.15) {
+  return( 
+    data.frame(
+      y = 0.95 * upper_limit,
+      label = paste(length(y))
+    )
+  )
+}
+
+#code for stat summary section from https://medium.com/@gscheithauer/how-to-add-number-of-observations-to-a-ggplot2-boxplot-b22710f7ef80
+
+#subset the graph
+
+### CANU snps with longest read selection
+canu_hifi_graph <- subset(hifi_snp_graph, assembly_tool == "canu") %>% subset(read_selection == "longest")
+
+ggplot(canu_hifi_graph, aes(x = factor(depth), y = ref_pos)) +
+    geom_jitter() +
+    coord_flip() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = -18,
+               vjust = 0) + 
+  scale_y_continuous(limits = c(0, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in canu longest assemblies", 
+       x="Depth of coverage",
+       y="SNP Location") 
+
+ggsave("images/hifi_snps/canu_snps_longest_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+
+### - CANU SNPs with random read selection
+canu_hifi_graph <- subset(hifi_snp_graph, assembly_tool == "canu") %>% subset(read_selection == "random")
+
+vert_labs_loc = -25
+
+ggplot(canu_hifi_graph, aes(x = factor(depth), y = ref_pos)) +
+    coord_flip() +
+    geom_jitter() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = 0.5,
+               vjust = -32) + 
+  scale_y_continuous(limits = c(0, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in canu random assemblies", 
+       x="Depth of coverage",
+       y="SNP Location")
+
+ggsave("images/hifi_snps/canu_snps_random_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+
+## FLYE snps with longest read selection
+
+flye_hifi_graph <- subset(hifi_snp_graph, assembly_tool == "flye") %>% subset(read_selection == "longest")
+
+ggplot(flye_hifi_graph, aes(x = factor(depth), y = ref_pos)) +
+    coord_flip() +
+    geom_jitter() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = 0.5,
+               vjust = -25) + 
+  scale_y_continuous(limits = c(0, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in Flye assemblies w longest reads", 
+       x="Depth of coverage",
+       y="SNP Location") 
+
+ggsave("images/hifi_snps/flye_snps_longest_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+
+## FLYE snps with random read selection
+
+flye_hifi_graph <- subset(hifi_snp_graph, assembly_tool == "flye") %>% subset(read_selection == "random")
+
+ggplot(flye_hifi_graph, aes(x = factor(depth), y = ref_pos)) +
+#    geom_violin(trim = FALSE,
+#                scale = "count",
+#               width = 1)+
+    coord_flip() +
+    geom_jitter() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = 0.5,
+               vjust = -25) + 
+  scale_y_continuous(limits = c(0, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in flye assemblies w random reads", 
+       x="Depth of coverage",
+       y="SNP Location") 
+
+ggsave("images/hifi_snps/flye_snps_random_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+
+## hicanu snps with longest read selection
+
+hicanu_hifi_graph <- subset(hifi_snp_graph, assembly_tool == "hicanu") %>% subset(read_selection == "longest")
+
+ggplot(hicanu_hifi_graph, aes(x = factor(depth), y = ref_pos)) +
+    coord_flip() +
+    geom_jitter() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = 0.5,
+               vjust = -25) + 
+  scale_y_continuous(limits = c(0, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in hicanu assemblies w longest reads", 
+       x="Depth of coverage",
+       y="SNP Location") 
+
+ggsave("images/hifi_snps/hicanu_snps_longest_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+
+## hicanu snps with longest read selection
+
+hicanu_hifi_graph <- subset(hifi_snp_graph, assembly_tool == "hicanu") %>% subset(read_selection == "random")
+
+ggplot(hicanu_hifi_graph, aes(x = factor(depth), y = ref_pos)) +
+    geom_point() +
+    geom_jitter() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = 0.5,
+               vjust = -25) + 
+  scale_y_continuous(limits = c(-50000, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in hicanu assemblies w random reads", 
+       x="Depth of coverage",
+       y="SNP Location") 
+
+ggsave("images/hifi_snps/hicanu_snps_random_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+
+## hifiasm snps with longest read selection
+
+hifiasm_hifi_graph <- subset(hifi_snp_graph, assembly_tool == "hifiasm") %>% subset(read_selection == "longest")
+
+ggplot(hifiasm_hifi_graph, aes(x = factor(depth), y = ref_pos)) +
+    geom_point() +
+    geom_jitter() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = 0.5,
+               vjust = -25) + 
+  scale_y_continuous(limits = c(-50000, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in hifiasm assemblies w longest reads", 
+       x="Depth of coverage",
+       y="SNP Location") 
+
+ggsave("images/hifi_snps/hifiasm_snps_longest_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+
+## hifiasm snps with longest read selection
+
+hifiasm_hifi_graph <- subset(hifi_snp_graph, assembly_tool == "hifiasm") %>% subset(read_selection == "random")
+
+ggplot(hifiasm_hifi_graph, aes(x = factor(depth), y = ref_pos)) +
+#    geom_point() +
+    geom_jitter() +
+  stat_summary(fun.data = stat_box_data, 
+               geom = "text", 
+               hjust = 0.5,
+               vjust = -25) + 
+  scale_y_continuous(limits = c(-50000, 170000)) +
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="SNPs in hifiasm assemblies w random reads", 
+       x="Depth of coverage",
+       y="SNP Location") 
+
+ggsave("images/hifi_snps/hifiasm_snps_random_graph.png",
+         width = 5,
+         height = 5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+```

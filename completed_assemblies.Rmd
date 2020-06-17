@@ -1,0 +1,320 @@
+---
+title: "completed_assemblies"
+author: "Chelsea Matthews"
+date: "13 May 2020"
+output: 
+  html_document:
+      code_folding: "show"
+      number_sections: TRUE
+      toc: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(ggpubr)
+library(plyr)
+library(tidyverse)
+library(ggplot2)
+library(grImport)
+library(XML)
+library(kableExtra)
+library(cluster)
+library(purrr)
+library(data.table)
+library(ggpubr)
+library(scales)
+library(viridis)
+library(dplyr)
+library(cowplot) 
+library(egg)
+library(fuzzyjoin)
+if (!require(GGally, quietly = TRUE)) {
+  getFromNamespace("install_github", asNamespace("devtools"))("ggobi/ggally")
+}
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+											results = "asis",
+											message = FALSE, warning = FALSE,
+											error = FALSE)
+```
+
+```{r}
+
+ronincol = "#50bda1"
+phoenixcol = "#3970d0"
+
+hifi24 <- data.frame(
+  group = c("x","x","x","x","x","x","x","x","x","x",
+            "x","x","x","x","x","x","x","x","x","x",
+            "x","x","x","x","x","x","x","x","x","x",
+            "x","x","x","x","x","x","x","x","x","x",
+            "longest","longest","longest","longest","longest","lmiss","x","x","x","x",
+            "random","random","random","random","random","random","x","x","x","x",
+            "longest","longest","longest","longest","longest","longest","x","x","x","x",
+            "random","random","random","random","random","random","x","x","x","x",
+            "lmiss","lmiss","lmiss","lmiss","lmiss","lmiss","x","x","x","x",
+            "random","random","random","random","random","random","x","x","x","x",
+            "longest","longest","longest","longest","longest","longest","x","x","x","x",
+            "random","random","random","random","random","random","x","x","x","x"),
+  value = c(0,0,0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,
+            2,2,2,2,2,0,0,0,0,0,
+            2,2,2,2,2,2,0,0,0,0,
+            2,2,2,2,2,2,0,0,0,0,
+            2,2,2,2,2,2,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,
+            1,1,1,1,1,1,0,0,0,0,
+            2,2,2,2,2,2,0,0,0,0,
+            2,2,2,2,2,2,0,0,0,0),
+  x = c(10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150),
+  y = c("raven","raven","raven","raven","raven","raven","raven","raven","raven","raven",
+        "raven","raven","raven","raven","raven","raven","raven","raven","raven","raven",
+        "wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2",
+        "wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2",
+        "flye","flye","flye","flye","flye","flye","flye","flye","flye","flye",
+        "flye","flye","flye","flye","flye","flye","flye","flye","flye","flye",
+        "canu","canu","canu","canu","canu","canu","canu","canu","canu","canu",
+        "canu","canu","canu","canu","canu","canu","canu","canu","canu","canu",
+        "hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu",
+        "hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu",
+        "hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm",
+        "hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm")
+)
+
+hifi24$y <- as.factor(hifi24$y)
+hifi24$x <- as.factor(hifi24$x)
+hifi24$group <- as.factor(hifi24$group)
+hifi24$value <- as.factor(hifi24$value)
+
+hifi24 <- hifi24%>% 
+  dplyr::mutate(y = factor(y, levels = c("wtdbg2","raven","flye","canu","hicanu","hifiasm")))
+
+shapes <- c("longest" = "\u25E4",
+            "random" = "\u25E2",
+            "lmiss" = "\u25F8",
+            "rmiss" = "\u25FF",
+            "x" = "\u002D")
+
+hifi24_graph <- ggplot(hifi24, aes(x = x, y = y, color = value, shape = group)) +
+    geom_point(size = 10) +
+    scale_shape_manual(values = shapes) +
+    theme_minimal() +
+    theme(panel.grid = element_blank()) + 
+    theme(legend.title = element_blank()) +
+    scale_colour_manual(breaks = c("0","1","2"),
+                        values = c("gray75", phoenixcol, ronincol))+ 
+  guides(color = FALSE) +
+  labs(y="",x="Assembly Read Depth")
+
+```
+
+```{r}
+hifi11 <- data.frame(
+  group = c("x","x","x","x","x","x","x","x","x","x",
+            "x","x","x","x","x","x","x","x","x","x",
+            "x","x","x","x","x","x","x","x","x","x",
+            "x","x","x","x","x","x","x","x","x","x",
+            "longest","longest","longest","longest","lmiss","x","x","x","x","x",
+            "random","random","random","random","random","x","x","x","x","x",
+            "longest","longest","longest","longest","longest","x","x","x","x","x",
+            "random","random","random","random","random","x","x","x","x","x",
+            "longest","longest","longest","longest","longest","x","x","x","x","x",
+            "random","random","random","random","random","x","x","x","x","x",
+            "longest","longest","longest","longest","longest","x","x","x","x","x",
+            "random","random","random","random","random","x","x","x","x","x"),
+  value = c(0,0,0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,
+            2,2,2,2,0,0,0,0,0,0,
+            2,2,2,2,2,0,0,0,0,0,
+            1,1,1,1,1,0,0,0,0,0,
+            1,1,1,1,1,0,0,0,0,0,
+            1,1,1,1,1,0,0,0,0,0,
+            1,1,1,1,1,0,0,0,0,0,
+            1,1,1,1,1,0,0,0,0,0,
+            1,1,1,1,1,0,0,0,0,0),
+  x = c(10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150),
+  y = c("raven","raven","raven","raven","raven","raven","raven","raven","raven","raven",
+        "raven","raven","raven","raven","raven","raven","raven","raven","raven","raven",
+        "wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2",
+        "wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2",
+        "flye","flye","flye","flye","flye","flye","flye","flye","flye","flye",
+        "flye","flye","flye","flye","flye","flye","flye","flye","flye","flye",
+        "canu","canu","canu","canu","canu","canu","canu","canu","canu","canu",
+        "canu","canu","canu","canu","canu","canu","canu","canu","canu","canu",
+        "hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu",
+        "hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu",
+        "hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm",
+        "hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm")
+)
+
+hifi11$y <- as.factor(hifi11$y)
+hifi11$x <- as.factor(hifi11$x)
+hifi11$group <- as.factor(hifi11$group)
+hifi11$value <- as.factor(hifi11$value)
+
+hifi11 <- hifi11%>% 
+  dplyr::mutate(y = factor(y, levels = c("wtdbg2","raven","flye","canu","hicanu","hifiasm")))
+
+shapes <- c("longest" = "\u25E4",
+            "random" = "\u25E2",
+            "lmiss" = "\u25F8",
+            "rmiss" = "\u25FF",
+            "x" = "\u002D")
+
+hifi11_graph <- ggplot(hifi11, aes(x = x, y = y, color = value, shape = group)) +
+    geom_point(size = 10) +
+    scale_shape_manual(values = shapes) +
+    theme_minimal() +
+    theme(panel.grid = element_blank()) + 
+    theme(axis.title = element_blank(),
+        legend.title = element_blank()) +
+    scale_colour_manual(breaks = c("0","1","2"),
+                        values = c("gray75", phoenixcol, ronincol))
+```
+
+```{r}
+
+clr30 <- data.frame(
+  group = c("longest","x","longest","x","longest","x","longest","longest","longest","longest",
+            "random","x","random","x","random","x","random","random","random","random",
+            "longest","x","longest","x","longest","x","longest","longest","longest","longest",
+            "random","x","random","x","random","x","random","random","random","random",
+            "longest","x","longest","x","longest","x","longest","longest","longest","lmiss",
+            "random","x","random","x","random","x","random","random","random","random",
+            "lmiss","x","longest","x","lmiss","x","lmiss","lmiss","lmiss","lmiss",
+            "rmiss","x","random","x","random","x","random","rmiss","rmiss","rmiss",
+            "x","x","x","x","x","x","x","x","x","x",
+            "x","x","x","x","x","x","x","x","x","x",
+            "x","x","x","x","x","x","x","x","x","x",
+            "x","x","x","x","x","x","x","x","x","x"),
+  value = c(1,0,1,0,2,0,2,2,2,2,
+            1,0,1,0,1,0,2,2,2,2,
+            1,0,1,0,2,0,2,2,2,2,
+            1,0,1,0,2,0,2,2,2,2,
+            1,0,1,0,2,0,2,2,2,0,
+            2,0,2,0,2,0,2,2,2,2,
+            0,0,1,0,0,0,0,0,0,0,
+            0,0,2,0,1,0,2,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0,
+            0,0,0,0,0,0,0,0,0,0),
+  x = c(10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150,
+        10,15,25,35,50,60,75,100,125,150,10,15,25,35,50,60,75,100,125,150),
+  y = c("raven","raven","raven","raven","raven","raven","raven","raven","raven","raven",
+        "raven","raven","raven","raven","raven","raven","raven","raven","raven","raven",
+        "wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2",
+        "wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2","wtdbg2",
+        "flye","flye","flye","flye","flye","flye","flye","flye","flye","flye",
+        "flye","flye","flye","flye","flye","flye","flye","flye","flye","flye",
+        "canu","canu","canu","canu","canu","canu","canu","canu","canu","canu",
+        "canu","canu","canu","canu","canu","canu","canu","canu","canu","canu",
+        "hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu",
+        "hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu","hicanu",
+        "hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm",
+        "hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm","hifiasm")
+)
+
+clr30$y <- as.factor(clr30$y)
+clr30$x <- as.factor(clr30$x)
+clr30$group <- as.factor(clr30$group)
+clr30$value <- as.factor(clr30$value)
+
+clr30 <- clr30%>% 
+  dplyr::mutate(y = factor(y, levels = c("wtdbg2","raven","flye","canu","hicanu","hifiasm")))
+
+#cols <- c("0" = "white", "0" = "#65587F", "2" = "gray40")
+shapes <- c("longest" = "\u25E4",
+            "random" = "\u25E2",
+            "lmiss" = "\u25F8",
+            "rmiss" = "\u25FF",
+            "x" = "\u002D")
+
+#U+3381
+#\u002D
+
+clr_graph <- ggplot(clr30, aes(x = x, y = y, color = value, shape = group)) +
+    geom_point(size = 10) +
+    scale_shape_manual(values = shapes,
+                       breaks = c("longest","random","lmiss","rmiss"),
+                       labels = c("Longest -\ncomplete","Random -\ncomplete",
+                                  "Longest -\nincomplete", "Random -\nincomplete"),
+                       name = "Read selection &\ncompletion status") +
+    theme_minimal() +
+    theme(panel.grid = element_blank(),
+          axis.title = element_blank()) + 
+    scale_colour_manual(breaks = c("1","2"),
+                        values = c("gray75", phoenixcol, ronincol),
+                        labels = c("Phoenix","AWS"),
+                        name = "HPC") 
+
+
+```
+
+```{r}
+legend <- get_legend(
+  clr_graph + 
+    guides(color = guide_legend(nrow = 2,
+                                order = 1),
+           shape = guide_legend(nrow = 2,
+                                order = 2)) +
+    theme(legend.position = "bottom")
+)
+
+topSpace <- 0.5
+bottomSpace <- 0.2
+rightSpace <- 0.2
+leftSpace <- 0.2
+
+myPlot <- egg::ggarrange(
+                      clr_graph + theme(legend.position = "none",
+                                 axis.text = element_text(size=12),
+                                 axis.text.x = element_blank(),
+                                 plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+                       hifi11_graph + theme(legend.position = "none",
+                                 axis.text = element_text(size=12),
+                                 axis.text.x = element_blank(),
+                                 plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+                       hifi24_graph + theme(legend.position = "none",
+                                 axis.text = element_text(size=12),
+                                 axis.title = element_text(size=13),
+                                 plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+                      ncol = 1,
+                      labels = c("A. CLR Assemblies",
+                                 "B. 11kb HiFi Assemblies",
+                                 "C. 24kb HiFi Assemblies"),
+                      label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman"))
+)
+
+endPlot <- plot_grid(myPlot, legend, ncol = 1, rel_heights = c(1,0.12))
+
+ggsave("images/all_completed_assemblies.png",
+         width = 6,
+         height = 8.5,
+         #units = c("in", "cm", "mm"),
+         dpi = 300)
+```
+
+

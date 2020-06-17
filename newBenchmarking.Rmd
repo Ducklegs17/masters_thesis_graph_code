@@ -1,0 +1,1376 @@
+---
+title: "bench\"
+author: "Chelsea Matthews"
+date: "22 May 2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(readr)
+library(lubridate)
+library(magrittr)
+library(ggplot2)
+library(plyr)
+library(tidyverse)
+library(ggplot2)
+library(grImport)
+library(XML)
+library(kableExtra)
+library(cluster)
+library(purrr)
+library(data.table)
+library(ggpubr)
+library(scales)
+library(viridis)
+library(dplyr)
+library(cowplot) 
+library(egg) 
+library(ggnewscale)
+library(readr)
+library(lubridate)
+library(magrittr)
+```
+
+# Canu Benchmarking
+
+#find all folders in the benchcanu folders 
+benchcanu data is benchmarking data from canu assemblies run on phoenix. It can provide total cpu hours (needs a code block), Total time to run and max memory used.  
+```{r}
+clr_canu_bench <- list.dirs(path = "../pacbio_clr/benchcanu", full.names = TRUE, recursive = FALSE)
+
+hifi_canu_bench <- list.dirs(path = "../pacbio_hifi/benchcanu", full.names = TRUE, recursive = FALSE)
+
+```
+
+# Create empty tibble with appropriate column headers
+
+Note the following units:
+total_time: submit to end hours
+max_memory: Mb
+
+```{r}
+
+headers <- c("walltime","total_time","num_cores","max_memory","rule_name",
+             "read_type", "assembly_type","assembly_tool","read_selection","prefix",
+             "bbduk_cov","bbduk_kmer","depth","polishselect","polishdepth","polishround","core_hrs")
+
+
+hifi_canu_results <- vector(mode = "list", length = length(headers))
+clr_canu_results <- vector(mode = "list", length = length(headers))
+
+names(clr_canu_results) <- headers
+names(hifi_canu_results) <- headers
+
+```
+
+# Populate results tables with data describing the type of assembly (eg, coverage, ass type, ass tool etc.)
+
+```{r}
+lengthTest <- length(clr_canu_bench) > 1
+if (lengthTest){
+  for( i in 1:length(clr_canu_bench)) {
+    temp <- unlist(strsplit(clr_canu_bench[i], "/"))
+    temp <- unlist(strsplit(temp, "_"))
+    temp <- unlist(strsplit(temp, "\\."))
+    clr_canu_results[["read_type"]][i] <- temp[match("pacbio", temp) +1]
+    clr_canu_results[["assembly_type"]][i] <- temp[match("assemblytype", temp) +1]
+    clr_canu_results[["assembly_tool"]][i] <- temp[match("assemblytool", temp) +1]
+    clr_canu_results[["read_selection"]][i] <- temp[match("readselect", temp) +1]
+    clr_canu_results[["prefix"]][i] <- temp[match("prefix", temp) +1]
+    clr_canu_results[["bbduk_cov"]][i] <- paste0("0.",temp[match("cov", temp) +2])
+    clr_canu_results[["bbduk_kmer"]][i] <- temp[match("kmer", temp) +1]
+    clr_canu_results[["depth"]][i] <- temp[match("depth", temp) +1]
+    clr_canu_results[["rule_name"]][i] <- temp[match("assemblytool", temp) +1]
+    clr_canu_results[["polishselect"]][i] <- temp[match("polishselect", temp) +1]
+    clr_canu_results[["polishdepth"]][i] <- temp[match("polishdepth", temp) +1]
+    clr_canu_results[["polishround"]][i] <- temp[match("polishround", temp) +1]
+  }
+}
+
+lengthTest <- length(hifi_canu_bench)>1
+if (lengthTest) {
+  for( i in 1:length(hifi_canu_bench)) {
+    temp <- unlist(strsplit(hifi_canu_bench[i], "/"))
+    temp <- unlist(strsplit(temp, "_"))
+    temp <- unlist(strsplit(temp, "\\."))
+    hifi_canu_results[["read_type"]][i] <- temp[match("pacbio", temp) +1]
+    hifi_canu_results[["assembly_type"]][i] <- temp[match("assemblytype", temp) +1]
+    hifi_canu_results[["assembly_tool"]][i] <- temp[match("assemblytool", temp) +1]
+    hifi_canu_results[["read_selection"]][i] <- temp[match("readselect", temp) +1]
+    hifi_canu_results[["prefix"]][i] <- temp[match("prefix", temp) +1]
+    hifi_canu_results[["bbduk_cov"]][i] <- paste0("0.",temp[match("cov", temp) +2])
+    hifi_canu_results[["bbduk_kmer"]][i] <- temp[match("kmer", temp) +1]
+    hifi_canu_results[["depth"]][i] <- temp[match("depth", temp) +1]
+    hifi_canu_results[["rule_name"]][i] <- temp[match("assemblytool", temp) +1]
+    hifi_canu_results[["polishselect"]][i] <- temp[match("polishselect", temp) +1]
+    hifi_canu_results[["polishdepth"]][i] <- temp[match("polishdepth", temp) +1]
+    hifi_canu_results[["polishround"]][i] <- temp[match("polishround", temp) +1]
+  }
+}
+
+
+```
+
+# Calculate the max memory usage 
+
+Requires both max_memory and num_cores
+
+```{r}
+convertToMb <- function(str){
+  rawNum <- as.numeric(str_extract(str, ".+?(?=[:alpha:])"))
+  numZeros <- str_extract(str, "([:alpha:])") 
+  
+  numZeros <- switch(numZeros, "K" = 0.001, "M" = 1, "G" = 1000)
+  return(numZeros*rawNum)
+}
+
+# Function to find the maximum memory per node (number of cores * max memory per core)
+findMaxMem <- function(rowNo,benchData){
+  
+  path <- paste0(benchData[rowNo], "/max_memory.txt")
+  tempstring <- read_file(path) %>% 
+    strsplit('\n')
+  tempstring <- str_extract(tempstring[[1]], '([0-9]*.[0-9]*[:alpha:]/core)') 
+  memInMb <- lapply(tempstring,convertToMb)
+  memInMb <- as.numeric(memInMb)
+
+  path <- paste0(benchData[rowNo],"/num_cores.txt")
+  tempstring <- read_file(path) %>%
+    strsplit('\n')
+  tempstring <- as.numeric(str_extract(tempstring[[1]], '([0-9]+$)'))
+
+  totMemPerJob <- tempstring*memInMb
+
+  return(max(totMemPerJob))
+}
+
+lengthTest <- length(clr_canu_bench)>1
+if (lengthTest){
+  clr_canu_results[["max_memory"]] <- sapply(1:length(clr_canu_bench), FUN=findMaxMem, benchData = clr_canu_bench)
+} 
+
+lengthTest <- length(hifi_canu_bench)>1
+if (lengthTest){
+  hifi_canu_results[["max_memory"]] <- sapply(1:length(hifi_canu_bench), FUN=findMaxMem, benchData = hifi_canu_bench)
+} 
+
+
+```
+
+# Extract runtime in seconds (from start to finish)
+I want to record both the time from start to finish and the total runtime. 
+This section will calculate processing time not including wait time. 
+I want Walltime * num_cores. 
+
+```{r}
+findCoreHours <- function(rowNo,benchData){
+  
+#Num days/job  
+  path <- paste0(benchData[rowNo], "/walltime_elapsed.txt")
+  tempstring <- read_file(path) %>% 
+    strsplit('\n')
+  tempstring <- str_extract(tempstring[[1]], '[:digit:]?-?[:digit:]+:[:digit:]+:[:digit:]+') 
+
+  days <- str_extract(tempstring, '^[:digit:]-') %>% str_extract('[:digit:]')
+  days[is.na(days)] <- 0
+  
+  hours <- ((as.numeric(days))*24 + 
+    (as.numeric(str_extract(tempstring, '[^|-][:digit:]'))) + 
+    (as.numeric(str_extract(tempstring, ':[:digit:].:') %>% str_extract('[:digit:].')))/60 + 
+    (as.numeric(str_extract(tempstring, ':[:digit:].$') %>% str_extract('[:digit:].')))/3600)  
+  
+#Num cores
+  path <- paste0(benchData[rowNo],"/num_cores.txt")
+  tempstring <- read_file(path) %>%
+    strsplit('\n')
+  tempstring <- as.numeric(str_extract(tempstring[[1]], '([0-9]+$)'))
+
+  totCpuHrs <- sum(hours*tempstring)
+
+  return((totCpuHrs))
+}
+
+lengthTest <- length(clr_canu_bench)>1
+if (lengthTest){
+  clr_canu_results[["core_hrs"]] <- sapply(1:length(clr_canu_bench), FUN=findCoreHours, benchData = clr_canu_bench)
+} 
+
+lengthTest <- length(hifi_canu_bench)>1
+if (lengthTest){
+  hifi_canu_results[["core_hrs"]] <- sapply(1:length(hifi_canu_bench), FUN=findCoreHours, benchData = hifi_canu_bench)
+}
+
+```
+
+
+```{r}
+findWalltimeElapsed <- function(rowNo,benchData){
+  
+  path <- paste0(benchData[rowNo], "/walltime_elapsed.txt")
+  tempstring <- read_file(path) %>% 
+    strsplit('\n')
+  tempstring <- str_extract(tempstring[[1]], '[:digit:]?-?[:digit:]+:[:digit:]+:[:digit:]+') 
+
+  #num days
+  days <- str_extract(tempstring, '^[:digit:]-') %>% str_extract('[:digit:]')
+  days[is.na(days)] <- 0
+  
+  hours <- ((as.numeric(days))*24 + 
+    (as.numeric(str_extract(tempstring, '[^|-][:digit:]'))) + 
+    (as.numeric(str_extract(tempstring, ':[:digit:].:') %>% str_extract('[:digit:].')))/60 + 
+    (as.numeric(str_extract(tempstring, ':[:digit:].$') %>% str_extract('[:digit:].')))/3600)
+  
+  return(sum(hours))
+}
+
+lengthTest <- length(clr_canu_bench)>1
+if (lengthTest){
+  clr_canu_results[["walltime"]] <- sapply(1:length(clr_canu_bench), FUN=findWalltimeElapsed, benchData = clr_canu_bench)
+} 
+
+lengthTest <- length(hifi_canu_bench)>1
+if (lengthTest){
+  hifi_canu_results[["walltime"]] <- sapply(1:length(hifi_canu_bench), FUN=findWalltimeElapsed, benchData = hifi_canu_bench)
+} 
+
+
+```
+
+# Total time from start to finish 
+
+uses submit_time and end_time. 
+
+```{r}
+
+findTotalTime <- function(rowNo, benchData){
+  
+  path <- paste0(benchData[rowNo], "/submit_time.txt")
+  tempstring <- read_file(path) %>% 
+    strsplit('\n')
+  tempstring <- str_extract(tempstring[[1]], '[:digit:]{4}-[:digit:]{2}-[:digit:]{2}T[:digit:]{2}:[:digit:]{2}:[:digit:]{2}') 
+
+  submitTime <- min(tempstring)
+  
+    path <- paste0(benchData[rowNo], "/end_time.txt")
+  tempstring <- read_file(path) %>% 
+    strsplit('\n')
+  tempstring <- str_extract(tempstring[[1]], '[:digit:]{4}-[:digit:]{2}-[:digit:]{2}T[:digit:]{2}:[:digit:]{2}:[:digit:]{2}') 
+  
+  endTime <- max(tempstring)
+  totalTime <- ymd_hms(endTime) - ymd_hms(submitTime)
+  return(totalTime / dhours(1))
+}
+
+lengthTest <- length(clr_canu_bench)>1
+if (lengthTest){
+  clr_canu_results[["total_time"]] <- sapply(1:length(clr_canu_bench), FUN=findTotalTime, benchData = clr_canu_bench)
+} 
+
+lengthTest <- length(hifi_canu_bench)>1
+if (lengthTest){
+  hifi_canu_results[["total_time"]] <- sapply(1:length(hifi_canu_bench), FUN=findTotalTime, benchData = hifi_canu_bench)
+} 
+
+#convert num_cores columns to NA
+clr_canu_results[["num_cores"]][1:length(clr_canu_results[["walltime"]])] <- NA
+hifi_canu_results[["num_cores"]][1:length(hifi_canu_results[["walltime"]])] <- NA
+
+clr_canu_df <- as.data.frame(matrix(unlist(clr_canu_results),
+                                    nrow=length(clr_canu_results[[1]])))
+hifi_canu_df <- as.data.frame(matrix(unlist(hifi_canu_results),
+                                     nrow=length(hifi_canu_results[[1]])))
+
+colnames(clr_canu_df) <- headers
+colnames(hifi_canu_df) <- headers
+```
+
+
+
+```{r eval=FALSE}
+
+```
+
+========================================================================
+========================================================================
+Extracting benchmarking data from everything except canu
+========================================================================
+========================================================================
+This Doesn't include any Canu jobs and is derived from phoenix output for all jobs run on phoenix. 
+Includes, walltime, total runtime, core hrs, max memory
+# Creating empty dataframes and selecting only complete jobs.
+
+```{r}
+path <- "../pacbio_clr/phoenix_bench/status.txt"
+tempclr<- read_file(path) %>% 
+  strsplit('\n')
+completeRowsClr <- str_detect(tempclr[[1]],'COMPLETED')
+tempclr <- tempclr[[1]][completeRowsClr]
+
+path <- "../pacbio_hifi/phoenix_bench/status.txt"
+temphifi<- read_file(path) %>% 
+  strsplit('\n')
+completeRowsHifi <- str_detect(temphifi[[1]],'COMPLETE')
+temphifi <- temphifi[[1]][completeRowsHifi]
+
+headers <- c("walltime","total_time","num_cores","max_memory","rule_name",
+             "read_type", "assembly_type","assembly_tool","read_selection","prefix",
+             "bbduk_cov","bbduk_kmer","depth","polishselect","polishdepth","polishround","core_hrs")
+
+#clr_all_results <- data.frame(matrix(NA, nrow=length(tempclr), ncol=length(headers)))
+#hifi_all_results=data.frame(matrix(NA, nrow=length(temphifi), ncol=length(headers)))
+
+clr_all_results <- vector(mode = "list", length = length(headers))
+hifi_all_results <- vector(mode = "list", length = length(headers))
+
+names(clr_all_results) <- headers
+names(hifi_all_results) <- headers
+
+#Populate Dataframe by parseing data from rows 
+
+for( i in 1:length(tempclr)) {
+  temp <- unlist(strsplit(tempclr[[i]], "/"))
+  clr_all_results[["rule_name"]][i] <- temp[match("logs", temp) +1]
+  temp <- unlist(strsplit(temp, ","))
+  temp <- unlist(strsplit(temp, "="))
+  clr_all_results[["read_type"]][i] <- "clr"
+  clr_all_results[["bbduk_cov"]][i] <- temp[match("cov", temp) +1]
+  temp <- temp[-1]
+  temp <- unlist(strsplit(temp, "\\."))
+  clr_all_results[["assembly_type"]][i] <- temp[match("ass_type", temp) +1]
+  clr_all_results[["assembly_tool"]][i] <- temp[match("tool", temp) +1]
+  clr_all_results[["read_selection"]][i] <- temp[match("read_select", temp) +1]
+  clr_all_results[["prefix"]][i] <- temp[match("prefix", temp) +1]
+  clr_all_results[["bbduk_kmer"]][i] <- temp[match("kmer", temp) +1]
+  clr_all_results[["depth"]][i] <- temp[match("depth", temp) +1]
+  clr_all_results[["polishselect"]][i] <- temp[match("polishselect", temp) +1]
+  clr_all_results[["polishdepth"]][i] <- temp[match("polishdepth", temp) +1]
+  clr_all_results[["polishround"]][i] <- temp[match("polishround", temp) +1]
+}
+
+for( i in 1:length(temphifi)) {
+  temp <- unlist(strsplit(temphifi[[i]], "/"))
+  hifi_all_results[["rule_name"]][i] <- temp[match("logs", temp) +1]
+  temp <- unlist(strsplit(temp, ","))
+  temp <- unlist(strsplit(temp, "="))
+  hifi_all_results[["read_type"]][i] <- "hifi"
+  hifi_all_results[["bbduk_cov"]][i] <- temp[match("cov", temp) +1]
+  temp <- temp[-1]
+  temp <- unlist(strsplit(temp, "\\."))
+  hifi_all_results[["assembly_type"]][i] <- temp[match("ass_type", temp) +1]
+  hifi_all_results[["assembly_tool"]][i] <- temp[match("tool", temp) +1]
+  hifi_all_results[["read_selection"]][i] <- temp[match("read_select", temp) +1]
+  hifi_all_results[["prefix"]][i] <- temp[match("sample", temp) + 1]
+  hifi_all_results[["bbduk_kmer"]][i] <- temp[match("kmer", temp) +1]
+  hifi_all_results[["depth"]][i] <- temp[match("depth", temp) +1]
+  hifi_all_results[["polishselect"]][i] <- temp[match("polishselect", temp) +1]
+  hifi_all_results[["polishdepth"]][i] <- temp[match("polishdepth", temp) +1]
+  hifi_all_results[["polishround"]][i] <- temp[match("polishround", temp) +1]
+}
+
+```
+
+#Add total_time data
+
+```{r}
+#calculate Walltime
+
+findWalltime <- function(rowNo, type, completeRows){
+  path <- paste0("../pacbio_", type, "/phoenix_bench/walltime_elapsed.txt")
+  data <- read_file(path) %>% 
+    strsplit('\n')
+  data <- data[[1]][completeRows]
+  tempstring <- str_extract(data[[rowNo]], '[:digit:]?-?[:digit:]{2}:[:digit:]{2}:[:digit:]{2}') 
+    #num days
+  days <- str_extract(tempstring, '^[:digit:]-') %>% str_extract('[:digit:]')
+  days[is.na(days)] <- 0
+  
+  hours <- ((as.numeric(days))*24 + 
+    (as.numeric(str_extract(tempstring, '[^|-][:digit:]'))) + 
+    (as.numeric(str_extract(tempstring, ':[:digit:].:') %>% str_extract('[:digit:].')))/60 + 
+    (as.numeric(str_extract(tempstring, ':[:digit:].$') %>% str_extract('[:digit:].')))/3600)
+
+  return(sum(hours))
+}
+
+clr_all_results[["walltime"]] <- sapply(1:(length(tempclr)), FUN=findWalltime, type = "clr", completeRows = completeRowsClr)
+
+hifi_all_results[["walltime"]] <- sapply(1:(length(temphifi)), FUN=findWalltime, type = "hifi", completeRows = completeRowsHifi)
+```
+
+# Max memory resources
+
+```{r}
+#calculate max memory rsrcs.
+
+findMaxMemory <- function(rowNo, type, completeRows){
+  path <- paste0("../pacbio_", type, "/phoenix_bench/max_memory.txt")
+  data <- read_file(path) %>% 
+    strsplit('\n')
+  data <- data[[1]][completeRows]
+  tempstring <- str_extract(data[[rowNo]], '([:digit:]+.[:digit:]+[:alpha:]/)')
+  
+  rawNum <- as.numeric(str_extract(tempstring, ".+?(?=[:alpha:])"))
+  numZeros <- str_extract(tempstring, "([:alpha:])") 
+  
+  numZeros <- switch(numZeros, "K" = 0.001, "M" = 1, "G" = 1000)
+  
+  return(rawNum * numZeros)
+}
+
+clr_all_results[["max_memory"]] <- sapply(1:(length(tempclr)), FUN=findMaxMemory, type = "clr", completeRows = completeRowsClr)
+
+hifi_all_results[["max_memory"]] <- sapply(1:(length(temphifi)), FUN=findMaxMemory, type = "hifi", completeRows = completeRowsHifi)
+```
+
+```{r}
+#extract Number of cores.
+findNumCores <- function(rowNo, type, completeRows){
+  path <- paste0("../pacbio_", type, "/phoenix_bench/num_cores.txt")
+  data <- read_file(path) %>% 
+    strsplit('\n')
+  data <- data[[1]][completeRows]
+  tempstring <- str_extract(data[[rowNo]], '[:digit:]+$')
+  return(tempstring)
+}
+
+clr_all_results[["num_cores"]] <- sapply(1:(length(tempclr)), FUN=findNumCores, type = "clr", completeRows = completeRowsClr)
+
+hifi_all_results[["num_cores"]] <- sapply(1:(length(temphifi)), FUN=findNumCores, type = "hifi", completeRows = completeRowsHifi)
+
+```
+
+```{r}
+#extract total time (from submit to end)
+findTotalTime <- function(rowNo, type, completeRows){
+  path <- paste0("../pacbio_", type, "/phoenix_bench/submit_time.txt")
+  data <- read_file(path) %>% 
+    strsplit('\n')
+  data <- data[[1]][completeRows]
+  submitTime <- str_extract(data[[rowNo]], '[:digit:]{4}-[:digit:]{2}-[:digit:]{2}T[:digit:]{2}:[:digit:]{2}:[:digit:]{2}') 
+  
+  
+path <- paste0("../pacbio_", type, "/phoenix_bench/end_time.txt")
+  data <- read_file(path) %>% 
+    strsplit('\n')
+    data <- data[[1]][completeRows]
+  endTime <- str_extract(data[[rowNo]], '[:digit:]{4}-[:digit:]{2}-[:digit:]{2}T[:digit:]{2}:[:digit:]{2}:[:digit:]{2}') 
+  totalTime <- ymd_hms(endTime) - ymd_hms(submitTime)
+  
+  return(totalTime / dhours(1))
+}
+
+clr_all_results[["total_time"]] <- sapply(1:(length(tempclr)), FUN=findTotalTime, type = "clr", completeRows = completeRowsClr)
+
+hifi_all_results[["total_time"]] <- sapply(1:(length(temphifi)), FUN=findTotalTime, type = "hifi", completeRows = completeRowsHifi)
+
+clr_all_results[["core_hrs"]] <- 
+  as.numeric(clr_all_results[["walltime"]]) * as.numeric(clr_all_results[["num_cores"]])
+
+hifi_all_results[["core_hrs"]] <- 
+  as.numeric(hifi_all_results[["walltime"]]) * as.numeric(hifi_all_results[["num_cores"]])
+
+clr_all_df <- as.data.frame(matrix(unlist(clr_all_results), nrow=length(clr_all_results[[1]])))
+hifi_all_df <- as.data.frame(matrix(unlist(hifi_all_results), nrow=length(hifi_all_results[[1]])))
+```
+
+Graph wait time vs runtime here for SRR99694 and CLR low coverage ones
+
+```{r}
+names(clr_all_df) <- headers
+names(hifi_all_df) <- headers
+
+
+
+clr_all_df$depth <- factor(clr_all_df$depth, 
+                           levels = c("10","15","25","35","50","60","75","100","125","150"))
+hifi_all_df$depth <- factor(hifi_all_df$depth, 
+                           levels = c("10","15","25","35","50","60","75","100","125","150"))
+
+#make naming consistent
+clr_all_df$rule_name <- str_replace(clr_all_df$rule_name, "flye_genome", "flye")
+clr_all_df$prefix <- str_replace(clr_all_df$prefix, "m64015_90510_20042", "CLR")
+
+#converting to numeric
+clr_all_df$total_time <- as.numeric(as.character(clr_all_df$total_time))
+clr_all_df$walltime <- as.numeric(as.character(clr_all_df$walltime))
+
+hifi_all_df$total_time <- as.numeric(as.character(hifi_all_df$total_time))
+hifi_all_df$walltime <- as.numeric(as.character(hifi_all_df$walltime))
+
+#subsetting for total_time graph
+rulenames <- c("hicanu","flye","raven","hifiasm","canu","wtdbg2")
+
+clr_dat <- subset(clr_all_df, rule_name %in% rulenames) %>%
+  subset(assembly_type == "genome")
+
+clr_dat$rule_name <- factor(clr_dat$rule_name, 
+                           levels = c("flye","raven","wtdbg2"))
+
+myColors <- c("darkgoldenrod3","gray54","green4")
+
+names(myColors) <- levels(clr_dat$rule_name)
+colScale <- scale_colour_manual(name = "Assembly Tool",values = myColors)
+
+a <- ggplot(data = clr_dat, aes(x = depth, 
+                           ymin = 0, 
+                           ymax=walltime, 
+                           color = rule_name,
+                           shape = read_selection)) +
+  geom_linerange(position = position_dodge(.6), size = 2) +
+  geom_point(data = clr_dat, aes(x = depth, 
+                                 y = total_time, 
+                                 color = rule_name,
+                                 shape = read_selection), 
+             position = position_dodge(.6), size = 2.5) + 
+  theme_bw() +
+  xlab("Read Depth") +
+  ylab("Time (hrs)") +
+  theme(legend.position = "bottom",
+        legend.justification = "center",
+        legend.box = "vertical",
+        legend.margin = margin(t = 0, unit='cm')) + 
+  labs(shape = "Read Selection", col = "Assembly Tool") +
+  colScale
+
+ggsave("images/cost/compare_wait_with_run_time.png",
+         width = 5,
+         height = 3,
+         dpi = 300)
+
+```
+
+
+========================================================================================
+#Processing Benchmarking snakemake files
+========================================================================================
+
+# Reading in benchmarking data
+
+```{r}
+clr_benchmark_files <- dir("../pacbio_clr/benchmarks", recursive=TRUE, full.names=TRUE, pattern=".tsv$")
+
+
+newCols <- c("rule_name",
+             "threads",
+             "read_type", 
+             "assembly_type", 
+             "assembly_tool", 
+             "read_selection", 
+             "prefix", 
+             "bbduk_cov", 
+             "bbduk_kmer", 
+             "depth",
+             "polishdepth",
+             "polishselect",
+             "polishround")
+
+clr_bench <- ldply(clr_benchmark_files, read.delim)
+
+#clr_bench <- vector(mode = "list", length = length(newCols))
+#hifi_bench <- vector(mode = "list", length = length(newCols))
+
+#names(clr_bench) <- newCols
+#names(hifi_bench) <- newCols
+
+
+
+clr_bench[,newCols] <- NA
+
+for( i in 1:length(clr_benchmark_files)) {
+  temp <- unlist(strsplit(clr_benchmark_files[i], "/"))
+  temp <- unlist(strsplit(temp, "_"))
+  temp <- unlist(strsplit(temp, "\\."))
+  clr_bench[["rule_name"]][i] <- temp[match("benchmarks", temp) +1]
+  clr_bench[["read_type"]][i] <- "clr"
+  clr_bench[["assembly_type"]][i] <- temp[match("assemblytype", temp) +1]
+  clr_bench[["assembly_tool"]][i] <- temp[match("assemblytool", temp) +1]
+  clr_bench[["read_selection"]][i] <- temp[match("readselect", temp) +1]
+  clr_bench[["prefix"]][i] <- temp[match("prefix", temp) +1]
+  clr_bench[["bbduk_cov"]][i] <- temp[match("cov", temp) +1]
+  clr_bench[["bbduk_kmer"]][i] <- temp[match("kmer", temp) +1]
+  clr_bench[["depth"]][i] <- temp[match("depth", temp) +1]
+  clr_bench[["polishdepth"]][i] <- temp[match("polishdepth", temp) +1]
+  clr_bench[["polishround"]][i] <- temp[match("polishround", temp) +1]
+  clr_bench[["polishselect"]][i] <- temp[match("polishselect", temp) +1]
+}
+
+clr_bench$depth <- as.numeric(clr_bench$depth)
+
+#change rule_name flyegenome to flye.
+clr_bench[["rule_name"]] <- str_replace(clr_bench$rule_name, "flyegenome", "flye")
+
+#clr_bench_df <- as.data.frame(matrix(unlist(clr_bench), nrow=length(clr_bench[[1]])))
+
+#====================================================================
+#HIFI benchmarking Data
+#====================================================================
+
+hifi_benchmark_files <- dir("../pacbio_hifi/benchmarks", recursive=TRUE, full.names=TRUE, pattern=".tsv$")
+
+hifi_bench <- as_tibble(plyr::ldply(hifi_benchmark_files, read.delim))
+
+newCols <- c("rule_name",
+             "threads",
+             "read_type", 
+             "assembly_type", 
+             "assembly_tool", 
+             "read_selection", 
+             "prefix", 
+             "bbduk_cov", 
+             "bbduk_kmer", 
+             "depth",             
+             "polishdepth",
+             "polishselect",
+             "polishround")
+
+hifi_bench[,newCols] <- NA
+
+for( i in 1:length(hifi_benchmark_files)) {
+  temp <- unlist(strsplit(hifi_benchmark_files[i], "/"))
+  temp <- unlist(strsplit(temp, "_"))
+  temp <- unlist(strsplit(temp, "\\."))
+  hifi_bench[["rule_name"]][i] <- temp[match("benchmarks", temp) +1]
+  hifi_bench[["read_type"]][i] <- "hifi"
+  hifi_bench[["assembly_type"]][i] <- temp[match("assemblytype", temp) +1]
+  hifi_bench[["assembly_tool"]][i] <- temp[match("assemblytool", temp) +1]
+  hifi_bench[["read_selection"]][i] <- temp[match("readselect", temp) +1]
+  hifi_bench[["prefix"]][i] <- temp[match("prefix", temp) +1]
+  hifi_bench[["bbduk_cov"]][i] <- temp[match("cov", temp) +1]
+  hifi_bench[["bbduk_kmer"]][i] <- temp[match("kmer", temp) +1]
+  hifi_bench[["depth"]][i] <- temp[match("depth", temp) +1]
+  hifi_bench[["polishdepth"]][i] <- temp[match("polishdepth", temp) +1]
+  hifi_bench[["polishselect"]][i] <- temp[match("polishselect", temp) +1]
+  hifi_bench[["polishround"]][i] <- temp[match("polishround", temp) +1]
+}
+
+hifi_bench$depth <- as.numeric(hifi_bench$depth)
+
+#change rule_name flyegenome to flye.
+hifi_bench$prefix <- str_replace(hifi_bench$prefix, "rice24kb", "24kb")
+hifi_bench$prefix <- str_replace(hifi_bench$prefix, "SRR99694", "11kb")
+
+```
+
+# compare max rss for random genomes
+
+```{r}
+clr_bench$depth <- as.factor(clr_bench$depth)
+hifi_bench$depth <- as.factor(hifi_bench$depth)
+
+myColors <- c("orangered3","darkgoldenrod3","slateblue3","plum3","gray54","green4")
+
+names(myColors) <- c("canu","flye","hicanu","hifiasm","raven","wtdbg2")
+colScale <- scale_colour_manual(name = "Assembly Tool",values = myColors)
+
+assemblers <- c("raven", "flye", "wtdbg2")
+ data1 <- subset(clr_bench, subset = rule_name %in% assemblers) 
+ data1 <- subset(data1, assembly_type == "genome") %>%
+   subset(read_selection == "random") 
+
+assemblers <- c("flye", "hifiasm")
+data2 <- subset(hifi_bench, subset = rule_name %in% assemblers)
+data2 <- subset(data2, assembly_type == "genome") %>%
+  subset(read_selection == "random")%>%
+  subset(prefix == "24kb")
+ 
+data3 <- subset(hifi_bench, subset = rule_name %in% assemblers)
+data3 <- subset(data3, assembly_type == "genome") %>%
+  subset(read_selection == "random")%>%
+  subset(prefix == "11kb")
+ 
+clr <- ggplot(data = data1, aes(x = depth, y = max_rss, color = rule_name, group = rule_name)) + 
+   geom_point() +
+   geom_line() +
+   colScale + 
+   theme_bw()+
+   labs(x = "Read Depth",
+        y = "Peak Memory Usage") +
+   scale_y_continuous(labels = label_number(suffix = "Gb",
+                                            scale = 1/1000),
+                      breaks = seq(0,400000,100000)) + 
+   expand_limits(y = c(0,400000))
+
+ 
+hifi24 <- ggplot(data = data2, aes(x = depth, y = max_rss, color = rule_name, group = rule_name)) + 
+   geom_point() +
+   geom_line() +
+   colScale+ 
+   theme_bw()+ 
+     labs(x = "Read Depth",
+        y = "Peak Memory Usage") +
+      scale_y_continuous(labels = label_number(suffix = "Gb",
+                                            scale = 1/1000),
+                      breaks = seq(0,400000,100000)) + 
+   expand_limits(y = c(0,400000))
+ 
+hifi11 <- ggplot(data = data3, aes(x = depth, y = max_rss, color = rule_name, group = rule_name)) + 
+   geom_line() +
+   geom_point()+
+   colScale+ 
+   theme_bw() + 
+     labs(x = "Read Depth",
+        y = "Peak Memory Usage") +
+      scale_y_continuous(labels = label_number(suffix = "Gb",
+                                            scale = 1/1000),
+                      breaks = seq(0,400000,100000)) + 
+   expand_limits(y = c(0,400000))
+
+dum <- data1
+data1[1,10] <- "hifiasm"
+
+
+dummy <- ggplot(data = dum, aes(x = depth, y = max_rss, color = rule_name, group = rule_name)) + 
+   geom_line() +
+   geom_point()+
+   colScale+ 
+   theme_bw() + 
+     labs(x = "Read Depth",
+        y = "Peak Memory Usage") +
+      scale_y_continuous(labels = label_number(suffix = "Gb",
+                                            scale = 1/1000),
+                      breaks = seq(0,400000,100000)) + 
+   expand_limits(y = c(0,400000))
+  
+legend <- get_legend(
+  dummy +
+    theme(legend.position = "bottom")
+  )
+
+topSpace <- 0.5
+bottomSpace <- 0.2
+rightSpace <- 0.05
+leftSpace <- 0.05
+
+myPlot <- egg::ggarrange(
+  clr + theme(legend.position="none",
+              plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  hifi11 + theme(legend.position = "none",
+                 plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                 axis.title.y = element_blank(),
+                 axis.ticks.y = element_blank(),
+                 axis.text.y = element_blank()),
+  hifi24 + theme(legend.position = "none",
+                 plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                 axis.title.y = element_blank(),
+                 axis.ticks.y = element_blank(),
+                 axis.text.y = element_blank()),
+  widths = c(0.39,0.31,0.36),
+  labels = c("             CLR","  HiFi 11kb","  HiFi 24kb"),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+endPlot <- plot_grid(myPlot)
+endPlot <- plot_grid(myPlot, legend, nrow = 2, rel_heights = c(1, .09))
+
+ggsave("images/allgenomes_max_rss.png",
+         width = 6,
+         height = 3,
+         dpi = 300)
+
+```
+
+#Subset to get only assemblies completed on ronin.
+
+```{r}
+clr_bench$descriptor <- paste0(clr_bench$rule_name,
+                               clr_bench$depth,
+                               clr_bench$read_selection,
+                               clr_bench$assembly_type)
+
+hifi_bench$descriptor <- paste0(hifi_bench$rule_name,
+                               hifi_bench$depth,
+                               hifi_bench$read_selection,
+                               hifi_bench$assembly_type)
+
+clr_ronin <- c("flye10randomgenome",
+               "flye25randomgenome",
+               "wtdbg250randomgenome",
+               "flye50randomgenome",
+               "raven50longestgenome",
+               "wtdbg250longestgenome",
+               "flye50longestgenome",
+               "raven75randomgenome",
+               "wtdbg275randomgenome",
+               "flye75randomgenome",
+               "raven75longestgenome",
+               "wtdbg275longestgenome",
+               "flye75longestgenome",
+               "raven100randomgenome",
+               "wtdbg2100randomgenome",
+               "flye100randomgenome",
+               "raven100longestgenome",
+               "wtdbg2100longestgenome",
+               "flye100longestgenome",
+               "raven125randomgenome",
+               "wtdbg2125randomgenome",
+               "flye125randomgenome",
+               "raven125longestgenome",
+               "wtdbg2125longestgenome",
+               "flye125longestgenome",
+               "raven150randomgenome",
+               "wtdbg2150randomgenome",
+               "flye150randomgenome",
+               "raven150longestgenome",
+               "wtdbg2150longestgenome")
+
+hifi_11kbronin <- c("flye10randomgenome",
+                "flye15randomgenome",
+                "flye25randomgenome",
+                "flye35randomgenome",
+                "flye50randomgenome",
+                "flye10longestgenome",
+                "flye15longestgenome",
+                "flye25longestgenome",
+                "flye35longestgenome")
+                
+hifi_24kbronin <- c("hifiasm10randomgenome",
+                "hifiasm15randomgenome",
+                "hifiasm25randomgenome",
+                "hifiasm35randomgenome",
+                "hifiasm50randomgenome",
+                "hifiasm60randomgenome",
+                "hifiasm10longestgenome",
+                "hifiasm15longestgenome",
+                "hifiasm25longestgenome",
+                "hifiasm35longestgenome",
+                "hifiasm50longestgenome",
+                "hifiasm60longestgenome",
+                "flye10randomgenome",
+                "flye15randomgenome",
+                "flye25randomgenome",
+                "flye35randomgenome",
+                "flye50randomgenome",
+                "flye60randomgenome",
+                "flye10longestgenome",
+                "flye15longestgenome",
+                "flye25longestgenome",
+                "flye35longestgenome",
+                "flye50longestgenome",
+                "flye60longestgenome")
+
+clr_ronin_dat <- subset(clr_bench, descriptor %in% clr_ronin)
+
+hifi_ronin24kb_dat <- subset(hifi_bench, prefix == "24kb") %>%
+  subset(descriptor %in% hifi_24kbronin)
+
+hifi_ronin11kb_dat <- subset(hifi_bench, prefix == "11kb") %>%
+  subset(descriptor %in% hifi_11kbronin)
+
+#join all three datasets together, add cores column = 48 and re-format to match benchmark data created from phoenix.
+
+all_ronin_ass <- rbind(clr_ronin_dat, hifi_ronin24kb_dat, hifi_ronin11kb_dat)
+all_ronin_ass$num_cores <- "48"
+
+ronin_ass <- mutate(all_ronin_ass, core32 = (s/as.numeric(num_cores)*32)/(3600))
+ronin_ass <- mutate(ronin_ass, cpuHrs = as.numeric(num_cores)*(s/3600))
+
+```
+
+#Graph Number of core hours
+
+```{r}
+
+ronin_dat <- subset(ronin_ass, prefix == "m64015") %>%
+  subset(read_selection == "random")
+
+tools <- c("flye","raven","wtdbg2","canu")
+
+phoenix_dat <- subset(clr_all_df, prefix == "CLR") %>%
+  subset(rule_name %in% tools) %>%
+  subset(assembly_type == "genome") %>%
+  subset(read_selection == "random")
+
+canu_dat <- subset(clr_canu_df, rule_name == "canu") %>%
+  subset(read_selection == "random")
+
+phoenix_dat$core_hrs <- as.numeric(as.character(phoenix_dat$core_hrs))
+
+ronin_dat$depth <- factor(ronin_dat$depth,
+                          levels = c("10","25","50","75","100","125","150"))
+phoenix_dat$depth <- factor(phoenix_dat$depth,
+                          levels = c("10","25","50","75","100","125","150"))
+canu_dat$depth <- factor(canu_dat$depth,
+                          levels = c("10","25","50","75","100","125","150"))
+canu_dat$core_hrs <- as.numeric(as.character(canu_dat$core_hrs))
+
+#Add hollow shapes for phoenix, filled in for aws
+myColors <- c("orangered3","darkgoldenrod3","slateblue3","plum3","gray54","green4")
+
+names(myColors) <- c("canu","flye","hicanu","hifiasm","raven","wtdbg2")
+
+
+myShapes <- c(1,19)
+names(myShapes) <- c("randomphoenix","randomronin")
+shpScale <- scale_shape_manual(name = "Read Selection\n& run location", values = myShapes)
+
+phoenix_dat$rd_slct_loc <- paste0(phoenix_dat$read_selection, "phoenix")
+ronin_dat$rd_slct_loc <- paste0(ronin_dat$read_selection, "ronin")
+canu_dat$rd_slct_loc <- paste0(canu_dat$read_selection, "phoenix")
+
+clr <- ggplot(data = ronin_dat, aes(x = depth, y = cpuHrs, color = rule_name, shape = rd_slct_loc)) +
+  geom_point() +
+  labs(x = "Read Depth",
+       y = "CPU-time elapsed (hrs)") +
+  geom_point(data = phoenix_dat, aes(x = depth, y = core_hrs, color = rule_name, shape = rd_slct_loc)) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  expand_limits(y=c(0,2000)) +
+  geom_point(data = canu_dat, aes(x = depth, y = core_hrs, color = rule_name, shape = rd_slct_loc)) +
+  scale_shape_manual(name = "HPC", 
+                       labels = c("Phoenix",
+                                  "AWS"),
+                       values = myShapes) +
+  scale_color_manual(name = "Assembly\n Tool", values = myColors) +
+  guides(shape = guide_legend(nrow=2,byrow=TRUE),
+         color = guide_legend(nrow=2, byrow=TRUE))
+
+#HiFi 11kb
+
+ronin_dat <- subset(ronin_ass, prefix == "11kb") %>%
+  subset(read_selection = "random")
+
+tools <- c("hifiasm")
+
+phoenix_dat <- subset(hifi_all_df, prefix == "SRR99694") %>%
+  subset(rule_name %in% tools) %>%
+  subset(assembly_type == "genome") %>%
+  subset(read_selection == "random")
+
+canu_dat <- subset(hifi_canu_df, rule_name %in% c("canu","hicanu")) %>%
+  subset(assembly_type == "genome") %>%
+  subset(prefix == "SRR99694") %>%
+  subset(read_selection == "random")
+  
+
+phoenix_dat$core_hrs <- as.numeric(as.character(phoenix_dat$core_hrs))
+
+ronin_dat$depth <- factor(ronin_dat$depth,
+                          levels = c("10","15","25","35","50"))
+phoenix_dat$depth <- factor(phoenix_dat$depth,
+                          levels = c("10","15","25","35","50"))
+canu_dat$depth <- factor(canu_dat$depth,
+                          levels = c("10","15","25","35","50"))
+canu_dat$core_hrs <- as.numeric(as.character(canu_dat$core_hrs))
+
+#Add hollow shapes for phoenix, filled in for aws
+myColors <- c("orangered3","darkgoldenrod3","slateblue3","plum3","gray54","green4")
+
+names(myColors) <- c("canu","flye","hicanu","hifiasm","raven","wtdbg2")
+
+
+myShapes <- c(1,1,19,19)
+names(myShapes) <- c("randomphoenix","longestphoenix","randomronin","longestronin")
+shpScale <- scale_shape_manual(name = "Read Selection\n& run location", values = myShapes)
+
+phoenix_dat$rd_slct_loc <- paste0(phoenix_dat$read_selection, "phoenix")
+ronin_dat$rd_slct_loc <- paste0(ronin_dat$read_selection, "ronin")
+canu_dat$rd_slct_loc <- paste0(canu_dat$read_selection, "phoenix")
+
+hifi11 <- ggplot(data = ronin_dat, aes(x = depth, y = cpuHrs, color = rule_name, shape = rd_slct_loc)) +
+  geom_point() +
+  labs(x = "Read Depth",
+       y = "CPU Hours") +
+  geom_point(data = phoenix_dat, aes(x = depth, y = core_hrs, color = rule_name, shape = rd_slct_loc)) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  expand_limits(y=c(0,2000)) +
+  geom_point(data = canu_dat, aes(x = depth, y = core_hrs, color = rule_name, shape = rd_slct_loc)) +
+  scale_shape_manual(name = "Read Selection\nand HPC",
+                     labels = c("Longest - Phoenix", "Longest - Ronin",
+                                "Random - Phoenix", "Random - Ronin"),
+                       values = myShapes) +
+  scale_color_manual(name = "Assembly\n Tool", values = myColors) +
+  guides(shape = guide_legend(nrow=2,byrow=TRUE),
+         color = guide_legend(nrow=2, byrow=TRUE))
+
+ggsave("images/cost/core_hrs_hifi11.png",
+         width = 5,
+         height = 3,
+         dpi = 300)
+```
+
+```{r}
+#Graph of 24kb HiFi total Cores
+ronin_dat <- subset(ronin_ass, prefix == "24kb") %>%
+  subset(read_selection == "random")
+
+tools <- c("hicanu")
+
+phoenix_dat <- subset(hifi_all_df, prefix == "rice24kb") %>%
+  subset(rule_name %in% tools) %>%
+  subset(assembly_type == "genome") %>%
+  subset(read_selection == "random")
+
+canu_dat <- subset(hifi_canu_df, rule_name %in% c("canu","hicanu")) %>%
+  subset(assembly_type == "genome") %>%
+  subset(prefix == "rice24kb") %>%
+  subset(read_selection == "random")
+  
+
+phoenix_dat$core_hrs <- as.numeric(phoenix_dat$core_hrs) 
+
+ronin_dat$depth <- factor(ronin_dat$depth,
+                          levels = c("10","15","25","35","50","60"))
+phoenix_dat$depth <- factor(phoenix_dat$depth,
+                          levels = c("10","15","25","35","50","60"))
+canu_dat$depth <- factor(canu_dat$depth,
+                          levels = c("10","15","25","35","50","60"))
+canu_dat$core_hrs <- as.numeric(as.character(canu_dat$core_hrs))
+
+#Add hollow shapes for phoenix, filled in for aws
+myColors <- c("orangered3","darkgoldenrod3","slateblue3","plum3","gray54","green4")
+
+names(myColors) <- c("canu","flye","hicanu","hifiasm","raven","wtdbg2")
+
+
+myShapes <- c(1,1,19,19)
+names(myShapes) <- c("randomphoenix","longestphoenix","randomronin","longestronin")
+shpScale <- scale_shape_manual(name = "Read Selection\n& run location", values = myShapes)
+
+phoenix_dat$rd_slct_loc <- paste0(phoenix_dat$read_selection, "phoenix")
+ronin_dat$rd_slct_loc <- paste0(ronin_dat$read_selection, "ronin")
+canu_dat$rd_slct_loc <- paste0(canu_dat$read_selection, "phoenix")
+
+hifi24 <- ggplot(data = ronin_dat, aes(x = depth, y = cpuHrs, color = rule_name, shape = rd_slct_loc)) +
+  geom_point() +
+  labs(x = "Read Depth",
+       y = "CPU Hours") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  expand_limits(y=c(0,2000)) +
+  geom_point(data = canu_dat, aes(x = depth, y = core_hrs, color = rule_name, shape = rd_slct_loc)) +
+  scale_shape_manual(name = "Read Selection\nand HPC", 
+                       labels = c("Longest - Ronin",
+                                "Random - Phoenix", "Random - Ronin"),
+                       values = myShapes) +
+  scale_color_manual(name = "Assembly\n Tool", values = myColors) +
+  guides(shape = guide_legend(nrow=2,byrow=TRUE),
+         color = guide_legend(nrow=2, byrow=TRUE))
+
+ggsave("images/cost/core_hrs_hifi24.png",
+         width = 5,
+         height = 3,
+         dpi = 300)
+
+
+```
+
+Final CPU hrs graph
+
+```{r}
+rd_slct_loc <- c("randomphoenix","randomphoenix","randomronin","randomronin","randomronin","randomphoenix")
+tools <- c("flye","wtdbg2","canu","hicanu","raven","hifiasm")
+hrs <- c(1,2,3,4,5,6)
+depth <- c(10,15,25,35,50,60)
+dummy <- data.frame(rd_slct_loc, tools, hrs,depth)
+#2,1,17,16
+myShapes <- c(1,19)
+names(myShapes) <- c("randomphoenix","randomronin")
+shpScale <- scale_shape_manual(name = "HPC", values = myShapes)
+
+dum <- ggplot(data = dummy, aes(x = depth, y = hrs, color = tools, shape = rd_slct_loc)) +
+  geom_point() +
+  labs(x = "Read Depth",
+       y = "CPU Hours") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  expand_limits(y=c(0,15)) +
+  scale_shape_manual(name = "HPC",
+                       labels = c("Phoenix", "AWS"),
+                       values = myShapes) +
+  scale_color_manual(name = "Assembly\nTool", values = myColors) +
+  guides(shape = guide_legend(nrow=2,byrow=TRUE),
+         color = guide_legend(nrow=2, byrow=TRUE))
+
+legend <- get_legend(
+  dum +
+    guides(color = guide_legend(nrow = 2),
+           shape = guide_legend(nrow = 2)) +
+    theme(legend.position = "bottom",
+          legend.title = element_text(size=10),
+          legend.key.size = unit(0.4, "lines"))
+  )
+
+
+
+topSpace <- 0.5
+bottomSpace <- 0.1
+rightSpace <- 0.1
+leftSpace <- 0.1
+
+
+myPlot <- egg::ggarrange(
+  clr + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  hifi11 + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank()),
+  hifi24 + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank()),
+  widths = c(0.39,0.31,0.36),
+  labels = c("            CLR","  HiFi 11kb","  HiFi 24kb"),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+
+endPlot <- plot_grid(myPlot, legend, nrow = 2, rel_heights = c(1, .1))
+
+ggsave("images/cost/random_cpu_hrs.png",
+         width = 6.5,
+         height = 4.5,
+         dpi = 300)
+```
+
+#Graph Number of core hours
+
+```{r}
+
+ronin_dat <- subset(ronin_ass, prefix == "m64015") %>%
+  subset(read_selection == "longest")
+
+tools <- c("flye","raven","wtdbg2","canu")
+
+phoenix_dat <- subset(clr_all_df, prefix == "CLR") %>%
+  subset(rule_name %in% tools) %>%
+  subset(assembly_type == "genome") %>%
+  subset(read_selection == "longest")
+
+canu_dat <- subset(clr_canu_df, rule_name == "canu") %>%
+  subset(read_selection == "longest")
+
+phoenix_dat$core_hrs <- as.numeric(as.character(phoenix_dat$core_hrs))
+
+ronin_dat$depth <- factor(ronin_dat$depth,
+                          levels = c("10","25","50","75","100","125","150"))
+phoenix_dat$depth <- factor(phoenix_dat$depth,
+                          levels = c("10","25","50","75","100","125","150"))
+canu_dat$depth <- factor(canu_dat$depth,
+                          levels = c("10","25","50","75","100","125","150"))
+canu_dat$core_hrs <- as.numeric(as.character(canu_dat$core_hrs))
+
+#Add hollow shapes for phoenix, filled in for aws
+myColors <- c("orangered3","darkgoldenrod3","slateblue3","plum3","gray54","green4")
+
+names(myColors) <- c("canu","flye","hicanu","hifiasm","raven","wtdbg2")
+
+
+myShapes <- c(1,19)
+names(myShapes) <- c("randomphoenix","randomronin")
+shpScale <- scale_shape_manual(name = "Read Selection\n& run location", values = myShapes)
+
+phoenix_dat$rd_slct_loc <- paste0(phoenix_dat$read_selection, "phoenix")
+ronin_dat$rd_slct_loc <- paste0(ronin_dat$read_selection, "ronin")
+canu_dat$rd_slct_loc <- paste0(canu_dat$read_selection, "phoenix")
+
+clr <- ggplot(data = ronin_dat, aes(x = depth, y = cpuHrs, color = rule_name, shape = rd_slct_loc)) +
+  geom_point() +
+  labs(x = "Read Depth",
+       y = "Peak Memory Usage") +
+  geom_point(data = phoenix_dat, aes(x = depth, y = core_hrs, color = rule_name, shape = rd_slct_loc)) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  expand_limits(y=c(0,2000)) +
+  geom_point(data = canu_dat, aes(x = depth, y = core_hrs, color = rule_name, shape = rd_slct_loc)) +
+  scale_shape_manual(name = "HPC", 
+                       labels = c("Phoenix",
+                                  "AWS"),
+                       values = myShapes) +
+  scale_color_manual(name = "Assembly\n Tool", values = myColors) +
+  guides(shape = guide_legend(nrow=2,byrow=TRUE),
+         color = guide_legend(nrow=2, byrow=TRUE))
+
+#HiFi 11kb
+
+ronin_dat <- subset(ronin_ass, prefix == "11kb") %>%
+  subset(read_selection = "longest")
+
+tools <- c("hifiasm")
+
+phoenix_dat <- subset(hifi_all_df, prefix == "SRR99694") %>%
+  subset(rule_name %in% tools) %>%
+  subset(assembly_type == "genome") %>%
+  subset(read_selection == "longest")
+
+canu_dat <- subset(hifi_canu_df, rule_name %in% c("canu","hicanu")) %>%
+  subset(assembly_type == "genome") %>%
+  subset(prefix == "SRR99694") %>%
+  subset(read_selection == "longest")
+  
+
+phoenix_dat$core_hrs <- as.numeric(as.character(phoenix_dat$core_hrs))
+
+ronin_dat$depth <- factor(ronin_dat$depth,
+                          levels = c("10","15","25","35","50"))
+phoenix_dat$depth <- factor(phoenix_dat$depth,
+                          levels = c("10","15","25","35","50"))
+canu_dat$depth <- factor(canu_dat$depth,
+                          levels = c("10","15","25","35","50"))
+canu_dat$core_hrs <- as.numeric(as.character(canu_dat$core_hrs))
+
+#Add hollow shapes for phoenix, filled in for aws
+myColors <- c("orangered3","darkgoldenrod3","slateblue3","plum3","gray54","green4")
+
+names(myColors) <- c("canu","flye","hicanu","hifiasm","raven","wtdbg2")
+
+
+myShapes <- c(1,1,19,19)
+names(myShapes) <- c("randomphoenix","longestphoenix","randomronin","longestronin")
+shpScale <- scale_shape_manual(name = "Read Selection\n& run location", values = myShapes)
+
+phoenix_dat$rd_slct_loc <- paste0(phoenix_dat$read_selection, "phoenix")
+ronin_dat$rd_slct_loc <- paste0(ronin_dat$read_selection, "ronin")
+canu_dat$rd_slct_loc <- paste0(canu_dat$read_selection, "phoenix")
+
+hifi11 <- ggplot(data = ronin_dat, aes(x = depth, y = cpuHrs, color = rule_name, shape = rd_slct_loc)) +
+  geom_point() +
+  labs(x = "Read Depth",
+       y = "CPU Hours") +
+  geom_point(data = phoenix_dat, aes(x = depth, y = core_hrs, color = rule_name, shape = rd_slct_loc)) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  expand_limits(y=c(0,2000)) +
+  geom_point(data = canu_dat, aes(x = depth, y = core_hrs, color = rule_name, shape = rd_slct_loc)) +
+  scale_shape_manual(name = "Read Selection\nand HPC",
+                     labels = c("Longest - Phoenix", "Longest - Ronin",
+                                "Random - Phoenix", "Random - Ronin"),
+                       values = myShapes) +
+  scale_color_manual(name = "Assembly\n Tool", values = myColors) +
+  guides(shape = guide_legend(nrow=2,byrow=TRUE),
+         color = guide_legend(nrow=2, byrow=TRUE))
+
+```
+
+```{r}
+#Graph of 24kb HiFi total Cores
+ronin_dat <- subset(ronin_ass, prefix == "24kb") %>%
+  subset(read_selection == "longest")
+
+tools <- c("hicanu")
+
+phoenix_dat <- subset(hifi_all_df, prefix == "rice24kb") %>%
+  subset(rule_name %in% tools) %>%
+  subset(assembly_type == "genome") %>%
+  subset(read_selection == "longest")
+
+canu_dat <- subset(hifi_canu_df, rule_name %in% c("canu","hicanu")) %>%
+  subset(assembly_type == "genome") %>%
+  subset(prefix == "rice24kb") %>%
+  subset(read_selection == "longest")
+  
+
+phoenix_dat$core_hrs <- as.numeric(phoenix_dat$core_hrs) 
+
+ronin_dat$depth <- factor(ronin_dat$depth,
+                          levels = c("10","15","25","35","50","60"))
+phoenix_dat$depth <- factor(phoenix_dat$depth,
+                          levels = c("10","15","25","35","50","60"))
+canu_dat$depth <- factor(canu_dat$depth,
+                          levels = c("10","15","25","35","50","60"))
+canu_dat$core_hrs <- as.numeric(as.character(canu_dat$core_hrs))
+
+#Add hollow shapes for phoenix, filled in for aws
+myColors <- c("orangered3","darkgoldenrod3","slateblue3","plum3","gray54","green4")
+
+names(myColors) <- c("canu","flye","hicanu","hifiasm","raven","wtdbg2")
+
+
+myShapes <- c(1,1,19,19)
+names(myShapes) <- c("randomphoenix","longestphoenix","randomronin","longestronin")
+shpScale <- scale_shape_manual(name = "Read Selection\n& run location", values = myShapes)
+
+phoenix_dat$rd_slct_loc <- paste0(phoenix_dat$read_selection, "phoenix")
+ronin_dat$rd_slct_loc <- paste0(ronin_dat$read_selection, "ronin")
+canu_dat$rd_slct_loc <- paste0(canu_dat$read_selection, "phoenix")
+
+hifi24 <- ggplot(data = ronin_dat, aes(x = depth, y = cpuHrs, color = rule_name, shape = rd_slct_loc)) +
+  geom_point() +
+  labs(x = "Read Depth",
+       y = "CPU Hours") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  expand_limits(y=c(0,2000)) +
+  geom_point(data = canu_dat, aes(x = depth, y = core_hrs, color = rule_name, shape = rd_slct_loc)) +
+  scale_shape_manual(name = "Read Selection\nand HPC", 
+                       labels = c("Longest - Ronin",
+                                "Random - Phoenix", "Random - Ronin"),
+                       values = myShapes) +
+  scale_color_manual(name = "Assembly\n Tool", values = myColors) +
+  guides(shape = guide_legend(nrow=2,byrow=TRUE),
+         color = guide_legend(nrow=2, byrow=TRUE))
+
+```
+
+Final CPU hrs graph
+
+```{r}
+rd_slct_loc <- c("randomphoenix","randomphoenix","randomronin","randomronin","randomronin","randomphoenix")
+tools <- c("flye","wtdbg2","canu","hicanu","raven","hifiasm")
+hrs <- c(1,2,3,4,5,6)
+depth <- c(10,15,25,35,50,60)
+dummy <- data.frame(rd_slct_loc, tools, hrs,depth)
+#2,1,17,16
+myShapes <- c(1,19)
+names(myShapes) <- c("randomphoenix","randomronin")
+shpScale <- scale_shape_manual(name = "HPC", values = myShapes)
+
+dum <- ggplot(data = dummy, aes(x = depth, y = hrs, color = tools, shape = rd_slct_loc)) +
+  geom_point() +
+  labs(x = "Read Depth",
+       y = "CPU Hours") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  expand_limits(y=c(0,15)) +
+  scale_shape_manual(name = "HPC",
+                       labels = c("Phoenix", "AWS"),
+                       values = myShapes) +
+  scale_color_manual(name = "Assembly\nTool", values = myColors) +
+  guides(shape = guide_legend(nrow=2,byrow=TRUE),
+         color = guide_legend(nrow=2, byrow=TRUE))
+
+legend <- get_legend(
+  dum +
+    guides(color = guide_legend(nrow = 2),
+           shape = guide_legend(nrow = 2)) +
+    theme(legend.position = "bottom",
+          legend.title = element_text(size=10),
+          legend.key.size = unit(0.4, "lines"))
+  )
+
+topSpace <- 0.5
+bottomSpace <- 0.1
+rightSpace <- 0.1
+leftSpace <- 0.1
+
+myPlot <- egg::ggarrange(
+  clr + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  hifi11 + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank()),
+  hifi24 + theme(legend.position="none",
+            plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+            axis.title.y = element_blank(),
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank()),
+  widths = c(0.39,0.31,0.36),
+  labels = c("            CLR","  HiFi 11kb","  HiFi 24kb"),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+endPlot <- plot_grid(myPlot, legend, nrow = 2, rel_heights = c(1, .1))
+
+ggsave("images/cost/longest_cpu_hrs.png",
+         width = 6.5,
+         height = 4.5,
+         dpi = 300)
+```

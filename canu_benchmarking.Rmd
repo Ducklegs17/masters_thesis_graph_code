@@ -1,0 +1,839 @@
+---
+title: "canu_data_extraction"
+author: "Chelsea Matthews"
+date: "9 April 2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(readr)
+library(lubridate)
+library(magrittr)
+library(ggplot2)
+library(plyr)
+library(tidyverse)
+library(ggplot2)
+library(grImport)
+library(XML)
+library(kableExtra)
+library(cluster)
+library(purrr)
+library(data.table)
+library(ggpubr)
+library(scales)
+library(viridis)
+library(dplyr)
+library(cowplot) 
+library(egg) 
+library(ggnewscale)
+library(readr)
+library(lubridate)
+library(magrittr)
+```
+
+# Canu Benchmarking
+
+#find all folders in the benchcanu folders 
+
+```{r}
+clr_canu_bench <- list.dirs(path = "../pacbio_clr/benchcanu", full.names = TRUE, recursive = FALSE)
+
+hifi_canu_bench <- list.dirs(path = "../pacbio_hifi/benchcanu", full.names = TRUE, recursive = FALSE)
+
+```
+
+# Create empty tibble with appropriate column headers
+
+Note the following units:
+walltime: actual processing hours 
+total_time: submit to end hours
+max_memory: Mb
+
+```{r}
+
+headers <- c("walltime","total_time","num_cores","max_memory","rule_name",
+             "read_type", "assembly_type","assembly_tool","read_selection","prefix",
+             "bbduk_cov","bbduk_kmer","depth")
+
+clr_canu_results <- data.frame(matrix(NA, nrow=length(clr_canu_bench), ncol=length(headers)))
+hifi_canu_results=data.frame(matrix(NA, nrow=length(hifi_canu_bench), ncol=length(headers)))
+
+#headers <- c("walltime","total_time","max_rss","max_vms","max_uss","max_pss","io_in",
+#             "io_out","mean_load","rule_name","threads","read_type","assembly_type",
+#             "assembly_tool","read_selection","prefix","bbduk_cov","bbduk_kmer","depth")
+
+
+names(clr_canu_results) <- headers
+names(hifi_canu_results) <- headers
+
+```
+
+# Populate results tables with data describing the type of assembly (eg, coverage, ass type, ass tool etc.)
+
+```{r}
+lengthTest <- length(clr_canu_bench) > 1
+if (lengthTest){
+  for( i in 1:length(clr_canu_bench)) {
+    temp <- unlist(strsplit(clr_canu_bench[i], "/"))
+    temp <- unlist(strsplit(temp, "_"))
+    temp <- unlist(strsplit(temp, "\\."))
+    clr_canu_results[i,"read_type"] <- temp[match("pacbio", temp) +1]
+    clr_canu_results[i,"assembly_type"] <- temp[match("assemblytype", temp) +1]
+    clr_canu_results[i,"assembly_tool"] <- temp[match("assemblytool", temp) +1]
+    clr_canu_results[i,"read_selection"] <- temp[match("readselect", temp) +1]
+    clr_canu_results[i,"prefix"] <- temp[match("prefix", temp) +1]
+    clr_canu_results[i,"bbduk_cov"] <- paste0("0.",temp[match("cov", temp) +2])
+    clr_canu_results[i,"bbduk_kmer"] <- temp[match("kmer", temp) +1]
+    clr_canu_results[i,"depth"] <- temp[match("depth", temp) +1]
+    clr_canu_results[i,"rule_name"] <- temp[match("assemblytool", temp) +1]
+  }
+}
+
+lengthTest <- length(hifi_canu_bench)>1
+if (lengthTest) {
+  for( i in 1:length(hifi_canu_bench)) {
+    temp <- unlist(strsplit(hifi_canu_bench[i], "/"))
+    temp <- unlist(strsplit(temp, "_"))
+    temp <- unlist(strsplit(temp, "\\."))
+    hifi_canu_results[i,"read_type"] <- temp[match("pacbio", temp) +1]
+    hifi_canu_results[i,"assembly_type"] <- temp[match("assemblytype", temp) +1]
+    hifi_canu_results[i,"assembly_tool"] <- temp[match("assemblytool", temp) +1]
+    hifi_canu_results[i,"read_selection"] <- temp[match("readselect", temp) +1]
+    hifi_canu_results[i,"prefix"] <- temp[match("prefix", temp) +1]
+    hifi_canu_results[i,"bbduk_cov"] <- paste0("0.",temp[match("cov", temp) +2])
+    hifi_canu_results[i,"bbduk_kmer"] <- temp[match("kmer", temp) +1]
+    hifi_canu_results[i,"depth"] <- temp[match("depth", temp) +1]
+    hifi_canu_results[i,"rule_name"] <- temp[match("assemblytool", temp) +1]
+  }
+}
+
+
+```
+
+# Calculate the max memory usage 
+
+Requires both max_memory and num_cores
+
+```{r}
+convertToMb <- function(str){
+  rawNum <- as.numeric(str_extract(str, ".+?(?=[:alpha:])"))
+  numZeros <- str_extract(str, "([:alpha:])") 
+  
+  numZeros <- switch(numZeros, "K" = 0.001, "M" = 1, "G" = 1000)
+  return(numZeros*rawNum)
+}
+
+# Function to find the maximum memory per node (number of cores * max memory per core)
+findMaxMem <- function(rowNo,benchData){
+  
+  path <- paste0(benchData[rowNo], "/max_memory.txt")
+  tempstring <- read_file(path) %>% 
+    strsplit('\n')
+  tempstring <- str_extract(tempstring[[1]], '([0-9]*.[0-9]*[:alpha:]/core)') 
+  memInMb <- lapply(tempstring,convertToMb)
+  memInMb <- as.numeric(memInMb)
+
+  path <- paste0(benchData[rowNo],"/num_cores.txt")
+  tempstring <- read_file(path) %>%
+    strsplit('\n')
+  tempstring <- as.numeric(str_extract(tempstring[[1]], '([0-9]+$)'))
+
+  totMemPerJob <- tempstring*memInMb
+
+  return(max(totMemPerJob))
+  
+}
+
+lengthTest <- length(clr_canu_bench)>1
+if (lengthTest){
+  clr_canu_results$max_memory <- lapply(1:length(clr_canu_bench), FUN=findMaxMem, benchData = clr_canu_bench)
+} 
+
+lengthTest <- length(hifi_canu_bench)>1
+if (lengthTest){
+  hifi_canu_results$max_memory <- lapply(1:length(hifi_canu_bench), FUN=findMaxMem, benchData = hifi_canu_bench)
+} 
+
+
+```
+
+# Extract runtime in seconds (from start to finish)
+I want to record both the time from start to finish and the total runtime. 
+This section will calculate processing time not including wait time. 
+
+```{r}
+findWalltimeElapsed <- function(rowNo,benchData){
+  
+  path <- paste0(benchData[rowNo], "/walltime_elapsed.txt")
+  tempstring <- read_file(path) %>% 
+    strsplit('\n')
+  tempstring <- str_extract(tempstring[[1]], '[:digit:]?-?[:digit:]+:[:digit:]+:[:digit:]+') 
+
+  #num days
+  days <- str_extract(tempstring, '^[:digit:]-') %>% str_extract('[:digit:]')
+  days[is.na(days)] <- 0
+  
+  hours <- ((as.numeric(days))*24 + 
+    (as.numeric(str_extract(tempstring, '[^|-][:digit:]'))) + 
+    (as.numeric(str_extract(tempstring, ':[:digit:].:') %>% str_extract('[:digit:].')))/60 + 
+    (as.numeric(str_extract(tempstring, ':[:digit:].$') %>% str_extract('[:digit:].')))/3600)
+  
+  return(sum(hours))
+}
+
+lengthTest <- length(clr_canu_bench)>1
+if (lengthTest){
+  clr_canu_results$walltime <- lapply(1:length(clr_canu_bench), FUN=findWalltimeElapsed, benchData = clr_canu_bench)
+} 
+
+lengthTest <- length(hifi_canu_bench)>1
+if (lengthTest){
+  hifi_canu_results$walltime <- lapply(1:length(hifi_canu_bench), FUN=findWalltimeElapsed, benchData = hifi_canu_bench)
+} 
+
+
+```
+
+# Total time from start to finish 
+
+uses submit_time and end_time. 
+
+```{r}
+
+findTotalTime <- function(rowNo, benchData){
+  
+  path <- paste0(benchData[rowNo], "/submit_time.txt")
+  tempstring <- read_file(path) %>% 
+    strsplit('\n')
+  tempstring <- str_extract(tempstring[[1]], '[:digit:]{4}-[:digit:]{2}-[:digit:]{2}T[:digit:]{2}:[:digit:]{2}:[:digit:]{2}') 
+
+  submitTime <- min(tempstring)
+  
+    path <- paste0(benchData[rowNo], "/end_time.txt")
+  tempstring <- read_file(path) %>% 
+    strsplit('\n')
+  tempstring <- str_extract(tempstring[[1]], '[:digit:]{4}-[:digit:]{2}-[:digit:]{2}T[:digit:]{2}:[:digit:]{2}:[:digit:]{2}') 
+  
+  endTime <- max(tempstring)
+  totalTime <- ymd_hms(endTime) - ymd_hms(submitTime)
+  return(totalTime / dhours(1))
+}
+
+lengthTest <- length(clr_canu_bench)>1
+if (lengthTest){
+  clr_canu_results$total_time <- lapply(1:length(clr_canu_bench), FUN=findTotalTime, benchData = clr_canu_bench)
+} 
+
+lengthTest <- length(hifi_canu_bench)>1
+if (lengthTest){
+  hifi_canu_results$total_time <- lapply(1:length(hifi_canu_bench), FUN=findTotalTime, benchData = hifi_canu_bench)
+} 
+```
+
+
+```{r eval=FALSE}
+
+
+```
+
+========================================================================
+========================================================================
+Extracting benchmarking data from everything except canu
+========================================================================
+========================================================================
+
+# Creating empty dataframes and selecting only complete jobs.
+
+```{r}
+path <- "../pacbio_clr/phoenix_bench/status.txt"
+tempclr<- read_file(path) %>% 
+  strsplit('\n')
+completeRowsClr <- str_detect(tempclr[[1]],'COMPLETED')
+tempclr <- tempclr[[1]][completeRowsClr]
+
+path <- "../pacbio_hifi/phoenix_bench/status.txt"
+temphifi<- read_file(path) %>% 
+  strsplit('\n')
+completeRowsHifi <- str_detect(temphifi[[1]],'COMPLETE')
+temphifi <- temphifi[[1]][completeRowsHifi]
+
+headers <- c("walltime","total_time","num_cores","max_memory","rule_name",
+             "read_type", "assembly_type","assembly_tool","read_selection","prefix",
+             "bbduk_cov","bbduk_kmer","depth")
+
+clr_all_results <- data.frame(matrix(NA, nrow=length(tempclr), ncol=length(headers)))
+hifi_all_results=data.frame(matrix(NA, nrow=length(temphifi), ncol=length(headers)))
+
+names(clr_all_results) <- headers
+names(hifi_all_results) <- headers
+
+#Populate Dataframe by parseing data from rows 
+
+for( i in 1:length(tempclr)) {
+  temp <- unlist(strsplit(tempclr[[i]], "/"))
+  clr_all_results[i,"rule_name"] <- temp[match(".", temp) +1]
+  temp <- unlist(strsplit(temp, ","))
+  temp <- unlist(strsplit(temp, "="))
+  clr_all_results[i,"read_type"] <- "clr"
+  clr_all_results[i,"bbduk_cov"] <- temp[match("cov", temp) +1]
+  temp <- temp[-1]
+  temp <- unlist(strsplit(temp, "\\."))
+  clr_all_results[i,"assembly_type"] <- temp[match("ass_type", temp) +1]
+  clr_all_results[i,"assembly_tool"] <- temp[match("tool", temp) +1]
+  clr_all_results[i,"read_selection"] <- temp[match("read_select", temp) +1]
+  clr_all_results[i,"prefix"] <- temp[match("prefix", temp) +1]
+  clr_all_results[i,"bbduk_kmer"] <- temp[match("kmer", temp) +1]
+  clr_all_results[i,"depth"] <- temp[match("depth", temp) +1]
+}
+
+for( i in 1:length(temphifi)) {
+  temp <- unlist(strsplit(temphifi[[i]], "/"))
+  hifi_all_results[i,"rule_name"] <- temp[match(".", temp) +1]
+  temp <- unlist(strsplit(temp, ","))
+  temp <- unlist(strsplit(temp, "="))
+  hifi_all_results[i,"read_type"] <- "hifi"
+  hifi_all_results[i,"bbduk_cov"] <- temp[match("cov", temp) +1]
+  temp <- temp[-1]
+  temp <- unlist(strsplit(temp, "\\."))
+  hifi_all_results[i,"assembly_type"] <- temp[match("ass_type", temp) +1]
+  hifi_all_results[i,"assembly_tool"] <- temp[match("tool", temp) +1]
+  hifi_all_results[i,"read_selection"] <- temp[match("read_select", temp) +1]
+  hifi_all_results[i,"prefix"] <- temp[match("prefix", temp) +1]
+  hifi_all_results[i,"bbduk_kmer"] <- temp[match("kmer", temp) +1]
+  hifi_all_results[i,"depth"] <- temp[match("depth", temp) +1]
+}
+
+```
+
+#Add total_time data
+
+```{r}
+#calculate Walltime
+
+findWalltime <- function(rowNo, type, completeRows){
+  path <- paste0("../pacbio_", type, "/phoenix_bench/walltime_elapsed.txt")
+  data <- read_file(path) %>% 
+    strsplit('\n')
+  data <- data[[1]][completeRows]
+  tempstring <- str_extract(data[[rowNo]], '[:digit:]?-?[:digit:]{2}:[:digit:]{2}:[:digit:]{2}') 
+    #num days
+  days <- str_extract(tempstring, '^[:digit:]-') %>% str_extract('[:digit:]')
+  days[is.na(days)] <- 0
+  
+  hours <- ((as.numeric(days))*24 + 
+    (as.numeric(str_extract(tempstring, '[^|-][:digit:]'))) + 
+    (as.numeric(str_extract(tempstring, ':[:digit:].:') %>% str_extract('[:digit:].')))/60 + 
+    (as.numeric(str_extract(tempstring, ':[:digit:].$') %>% str_extract('[:digit:].')))/3600)
+
+  return(sum(hours))
+}
+
+clr_all_results$walltime <- lapply(1:(nrow(clr_all_results)), FUN=findWalltime, type = "clr", completeRows = completeRowsClr)
+
+hifi_all_results$walltime <- lapply(1:(nrow(hifi_all_results)), FUN=findWalltime, type = "hifi", completeRows = completeRowsHifi)
+```
+
+# Max memory resources
+
+```{r}
+#calculate max memory rsrcs.
+
+findMaxMemory <- function(rowNo, type, completeRows){
+  path <- paste0("../pacbio_", type, "/phoenix_bench/max_memory.txt")
+  data <- read_file(path) %>% 
+    strsplit('\n')
+  data <- data[[1]][completeRows]
+  tempstring <- str_extract(data[[rowNo]], '([:digit:]+.[:digit:]+[:alpha:]/)')
+  
+  rawNum <- as.numeric(str_extract(tempstring, ".+?(?=[:alpha:])"))
+  numZeros <- str_extract(tempstring, "([:alpha:])") 
+  
+  numZeros <- switch(numZeros, "K" = 0.001, "M" = 1, "G" = 1000)
+  
+  return(rawNum * numZeros)
+}
+
+clr_all_results$max_memory <- lapply(1:(nrow(clr_all_results)), FUN=findMaxMemory, type = "clr", completeRows = completeRowsClr)
+
+hifi_all_results$max_memory <- lapply(1:(nrow(hifi_all_results)), FUN=findMaxMemory, type = "hifi", completeRows = completeRowsHifi)
+```
+
+```{r}
+#extract Number of cores.
+findNumCores <- function(rowNo, type, completeRows){
+  path <- paste0("../pacbio_", type, "/phoenix_bench/num_cores.txt")
+  data <- read_file(path) %>% 
+    strsplit('\n')
+  data <- data[[1]][completeRows]
+  tempstring <- str_extract(data[[rowNo]], '[:digit:]+$')
+  return(tempstring)
+}
+
+df <- data.frame(matrix(unlist(l), nrow=length(l), byrow=T))
+temp <- lapply(1:(nrow(clr_all_results)), FUN=findNumCores, type = "clr", completeRows = completeRowsClr)
+
+clr_all_results$num_cores <- data.frame(matrix(unlist(temp), nrow = length(temp), byrow = T))
+
+as.data.frame(ldply(1:10,.fun = function(x){c(runif(1),"a")}))
+
+clr_all_results$num_cores <- as.data.frame(ldply(1:(nrow(clr_all_results)), .fun=findNumCores, type = "clr", completeRows = completeRowsClr))
+
+#clr_all_results$num_cores <- lapply(1:(nrow(clr_all_results)), FUN=findNumCores, type = "clr", completeRows = completeRowsClr)
+clr_all_results$num_cores <- ldply(1:(nrow(clr_all_results)), .fun=findNumCores, type = "clr", completeRows = completeRowsClr)
+
+hifi_all_results$num_cores <- ldply(1:(nrow(hifi_all_results)), .fun = findNumCores, type = "hifi", completeRows = completeRowsHifi)
+
+#hifi_all_results <- dplyr::rename(num_cores = V1)
+#clr_all_results <- rename(num_cores = V1)
+
+#hifi_all_results$num_cores <- lapply(1:(nrow(hifi_all_results)), FUN=findNumCores, type = "hifi", completeRows = completeRowsHifi)
+
+```
+
+```{r}
+#extract total time (from submit to end)
+findTotalTime <- function(rowNo, type, completeRows){
+  path <- paste0("../pacbio_", type, "/phoenix_bench/submit_time.txt")
+  data <- read_file(path) %>% 
+    strsplit('\n')
+  data <- data[[1]][completeRows]
+  submitTime <- str_extract(data[[rowNo]], '[:digit:]{4}-[:digit:]{2}-[:digit:]{2}T[:digit:]{2}:[:digit:]{2}:[:digit:]{2}') 
+  
+  
+path <- paste0("../pacbio_", type, "/phoenix_bench/end_time.txt")
+  data <- read_file(path) %>% 
+    strsplit('\n')
+    data <- data[[1]][completeRows]
+  endTime <- str_extract(data[[rowNo]], '[:digit:]{4}-[:digit:]{2}-[:digit:]{2}T[:digit:]{2}:[:digit:]{2}:[:digit:]{2}') 
+  totalTime <- ymd_hms(endTime) - ymd_hms(submitTime)
+  
+  return(totalTime / dhours(1))
+}
+
+clr_all_results$total_time <- lapply(1:(nrow(clr_all_results)), FUN=findTotalTime, type = "clr", completeRows = completeRowsClr)
+
+hifi_all_results$total_time <- lapply(1:(nrow(hifi_all_results)), FUN=findTotalTime, type = "hifi", completeRows = completeRowsHifi)
+
+```
+
+========================================================================================
+#Processing Benchmarking snakemake files
+========================================================================================
+
+# Reading in benchmarking data
+
+```{r}
+clr_benchmark_files <- dir("../pacbio_clr/benchmarks", recursive=TRUE, full.names=TRUE, pattern=".tsv$")
+
+clr_bench <- as_tibble(plyr::ldply(clr_benchmark_files, read.delim))
+
+newCols <- c("rule_name",
+             "threads",
+             "read_type", 
+             "assembly_type", 
+             "assembly_tool", 
+             "read_selection", 
+             "prefix", 
+             "bbduk_cov", 
+             "bbduk_kmer", 
+             "depth",
+             "polishdepth",
+             "polishselect",
+             "polishround")
+
+clr_bench[,newCols] <- NA
+
+for( i in 1:length(clr_benchmark_files)) {
+  temp <- unlist(strsplit(clr_benchmark_files[i], "/"))
+  temp <- unlist(strsplit(temp, "_"))
+  temp <- unlist(strsplit(temp, "\\."))
+  clr_bench[i,"rule_name"] <- temp[match("benchmarks", temp) +1]
+  clr_bench[i,"read_type"] <- "clr"
+  clr_bench[i,"assembly_type"] <- temp[match("assemblytype", temp) +1]
+  clr_bench[i,"assembly_tool"] <- temp[match("assemblytool", temp) +1]
+  clr_bench[i,"read_selection"] <- temp[match("readselect", temp) +1]
+  clr_bench[i,"prefix"] <- temp[match("prefix", temp) +1]
+  clr_bench[i,"bbduk_cov"] <- temp[match("cov", temp) +1]
+  clr_bench[i,"bbduk_kmer"] <- temp[match("kmer", temp) +1]
+  clr_bench[i,"depth"] <- temp[match("depth", temp) +1]
+  clr_bench[i,"polishdepth"] <- temp[match("polishdepth", temp) +1]
+  clr_bench[i,"polishround"] <- temp[match("polishround", temp) +1]
+  clr_bench[i,"polishselect"] <- temp[match("polishselect", temp) +1]
+}
+
+clr_bench$depth <- as.numeric(clr_bench$depth)
+
+#change rule_name flyegenome to flye.
+clr_bench$rule_name <- str_replace(clr_bench$rule_name, "flyegenome", "flye")
+
+#====================================================================
+#HIFI benchmarking Data
+#====================================================================
+
+hifi_benchmark_files <- dir("../pacbio_hifi/benchmarks", recursive=TRUE, full.names=TRUE, pattern=".tsv$")
+
+hifi_bench <- as_tibble(plyr::ldply(hifi_benchmark_files, read.delim))
+
+newCols <- c("rule_name",
+             "threads",
+             "read_type", 
+             "assembly_type", 
+             "assembly_tool", 
+             "read_selection", 
+             "prefix", 
+             "bbduk_cov", 
+             "bbduk_kmer", 
+             "depth",             
+             "polishdepth",
+             "polishselect",
+             "polishround")
+
+hifi_bench[,newCols] <- NA
+
+for( i in 1:length(hifi_benchmark_files)) {
+  temp <- unlist(strsplit(hifi_benchmark_files[i], "/"))
+  temp <- unlist(strsplit(temp, "_"))
+  temp <- unlist(strsplit(temp, "\\."))
+  hifi_bench[i,"rule_name"] <- temp[match("benchmarks", temp) +1]
+  hifi_bench[i,"read_type"] <- "hifi"
+  hifi_bench[i,"assembly_type"] <- temp[match("assemblytype", temp) +1]
+  hifi_bench[i,"assembly_tool"] <- temp[match("assemblytool", temp) +1]
+  hifi_bench[i,"read_selection"] <- temp[match("readselect", temp) +1]
+  hifi_bench[i,"prefix"] <- temp[match("prefix", temp) +1]
+  hifi_bench[i,"bbduk_cov"] <- temp[match("cov", temp) +1]
+  hifi_bench[i,"bbduk_kmer"] <- temp[match("kmer", temp) +1]
+  hifi_bench[i,"depth"] <- temp[match("depth", temp) +1]
+  hifi_bench[i,"polishdepth"] <- temp[match("polishdepth", temp) +1]
+  hifi_bench[i,"polishselect"] <- temp[match("polishselect", temp) +1]
+  hifi_bench[i,"polishround"] <- temp[match("polishround", temp) +1]
+}
+
+hifi_bench$depth <- as.numeric(hifi_bench$depth)
+
+#change rule_name flyegenome to flye.
+hifi_bench$prefix <- str_replace(hifi_bench$prefix, "rice24kb", "24kb")
+hifi_bench$prefix <- str_replace(hifi_bench$prefix, "SRR99694", "11kb")
+
+```
+
+# compare max rss for random genomes
+
+```{r}
+assemblers <- c("raven", "flye", "wtdbg2")
+data1 <- subset(clr_bench, subset = rule_name %in% assemblers) 
+data1 <- subset(data1, assembly_type == "genome") %>%
+  subset(read_selection == "random") 
+
+assemblers <- c("flye", "hifiasm")
+data2 <- subset(hifi_bench, subset = rule_name %in% assemblers) 
+data2 <- subset(data2, assembly_type == "genome") %>%
+  subset(read_selection == "random")%>%
+  subset(prefix == "24kb")
+
+data3 <- subset(hifi_bench, subset = rule_name %in% assemblers) 
+data3 <- subset(data3, assembly_type == "genome") %>%
+  subset(read_selection == "random")%>%
+  subset(prefix == "11kb")
+
+ggplot(data1, aes(rule_name, max_rss, group = prefix, col=depth)) + 
+  geom_point(size = 2, position = position_nudge(x=0)) + 
+  xlab("Assembly Tool") +
+  ylab("Max. Resident Set Size") +
+  scale_y_continuous(labels = label_number(suffix = " Gb", scale = (1/1000))) +
+  scale_colour_gradient("CLR\ncoverage",high = "#a54527", low = "#f4a187") +
+  new_scale_color() +
+  geom_point(data = data2, aes(color = depth), size = 2, position = position_nudge(x=-0.15)) +
+  scale_colour_gradient("HiFi 24kb\ncoverage",high = "#463d58", low = "#d0ccd8") +
+  new_scale_color() +
+  geom_point(data = data3, aes(color = depth), size = 2, position = position_nudge(x=0.15)) +
+  scale_colour_gradient("HiFi 11kb\ncoverage",high = "#388470", low = "#96d7c6") +
+  theme(legend.position = "bottom",
+        legend.text=element_text(size=7),
+        legend.title = element_text(size=7),
+        legend.key.width = unit(0.42,"cm"),
+        legend.margin = margin(c(0.7,0.7,0.7,0.7))) +
+  scale_fill_distiller() 
+
+ggsave("images/allgenomes_max_rss.png",
+         width = 5,
+         height = 3,
+         dpi = 300)
+
+```
+
+#Subset to get only assemblies completed on ronin.
+
+```{r}
+clr_bench$descriptor <- paste0(clr_bench$rule_name,
+                               clr_bench$depth,
+                               clr_bench$read_selection,
+                               clr_bench$assembly_type)
+
+hifi_bench$descriptor <- paste0(hifi_bench$rule_name,
+                               hifi_bench$depth,
+                               hifi_bench$read_selection,
+                               hifi_bench$assembly_type)
+
+clr_ronin <- c("flye10randomgenome",
+               "flye25randomgenome",
+               "raven50randomgenome",
+               "wtdbg250randomgenome",
+               "flye50randomgenome",
+               "raven50longestgenome",
+               "wtdbg250longestgenome",
+               "flye50longestgenome",
+               "raven75randomgenome",
+               "wtdbg275randomgenome",
+               "flye75randomgenome",
+               "raven75longestgenome",
+               "wtdbg275longestgenome",
+               "flye75longestgenome",
+               "raven100randomgenome",
+               "wtdbg2100randomgenome",
+               "flye100randomgenome",
+               "raven100longestgenome",
+               "wtdbg2100longestgenome",
+               "flye100longestgenome",
+               "raven125randomgenome",
+               "wtdbg2125randomgenome",
+               "flye125randomgenome",
+               "raven125longestgenome",
+               "wtdbg2125longestgenome",
+               "flye125longestgenome",
+               "raven150randomgenome",
+               "wtdbg2150randomgenome",
+               "flye150randomgenome",
+               "raven150longestgenome",
+               "wtdbg2150longestgenome")
+
+hifi_11kbronin <- c("flye10randomgenome",
+                "flye15randomgenome",
+                "flye25randomgenome",
+                "flye35randomgenome",
+                "flye50randomgenome",
+                "flye10longestgenome",
+                "flye15longestgenome",
+                "flye25longestgenome",
+                "flye35longestgenome")
+                
+hifi_24kbronin <- c("hifiasm10randomgenome",
+                "hifiasm15randomgenome",
+                "hifiasm25randomgenome",
+                "hifiasm35randomgenome",
+                "hifiasm50randomgenome",
+                "hifiasm60randomgenome",
+                "hifiasm10longestgenome",
+                "hifiasm15longestgenome",
+                "hifiasm25longestgenome",
+                "hifiasm35longestgenome",
+                "hifiasm50longestgenome",
+                "hifiasm60longestgenome",
+                "flye10randomgenome",
+                "flye15randomgenome",
+                "flye25randomgenome",
+                "flye35randomgenome",
+                "flye50randomgenome",
+                "flye60randomgenome",
+                "flye10longestgenome",
+                "flye15longestgenome",
+                "flye25longestgenome",
+                "flye35longestgenome",
+                "flye50longestgenome",
+                "flye60longestgenome")
+
+clr_ronin_dat <- subset(clr_bench, descriptor %in% clr_ronin)
+
+hifi_ronin24kb_dat <- subset(hifi_bench, prefix == "24kb") %>%
+  subset(descriptor %in% hifi_24kbronin)
+
+hifi_ronin11kb_dat <- subset(hifi_bench, prefix == "11kb") %>%
+  subset(descriptor %in% hifi_11kbronin)
+
+#join all three datasets together, add cores column = 48 and re-format to match benchmark data created from phoenix.
+
+all_ronin_ass <- rbind(clr_ronin_dat, hifi_ronin24kb_dat, hifi_ronin11kb_dat)
+all_ronin_ass$num_cores <- "48"
+
+ronin_ass <- mutate(all_ronin_ass, core32 = s/as.numeric(num_cores)*32)
+
+```
+
+
+#CREATE RUNTIME GRAPH HERE!!!
+
+```{r}
+#3 datasets 
+
+clr_results <- rbind(clr_canu_results, clr_all_results)
+hifi_results <- rbind(hifi_canu_results, hifi_all_results)
+
+clr_results <- clr_results %>% mutate(
+  total_time_min = as.numeric(total_time) * 60)
+hifi_results <- hifi_results %>% mutate(
+  total_time_min = as.numeric(total_time) * 60)
+
+clr_results <- clr_results %>% mutate(
+  walltime_min = as.numeric(walltime) * 60)
+hifi_results <- hifi_results %>% mutate(
+  walltime_min = as.numeric(walltime) * 60)
+
+clr_results$depth <- as.factor(as.numeric(clr_results$depth))
+clr_results$read_selection <- factor(clr_results$read_selection)
+hifi_results$depth <- as.factor(as.numeric(hifi_results$depth))
+hifi_results$read_selection <- factor(hifi_results$read_selection)
+
+#Filter clr and hifi results
+
+tempclr <- subset(clr_results, assembly_type == "genome")
+temphifi <- subset(hifi_results, assembly_type == "genome") 
+tempclr <- subset(tempclr, rule_name %in% c("flye","wtdbg2","raven","canu","hicanu","hifiasm"))
+temphifi <- subset(temphifi, rule_name %in% c("flye","wtdbg2","raven","canu","hicanu","hifiasm"))
+
+ronin_cols <-   c("s", "num_cores","assembly_type","rule_name","read_selection","prefix","depth")
+phoenix_cols <- c("walltime", "num_cores","assembly_type","rule_name","read_selection", "prefix",
+                  "depth")
+ronin_ass <- ronin_ass[,ronin_cols]
+tempclr <- tempclr[,phoenix_cols]
+temphifi <- temphifi[,phoenix_cols]
+
+ronin_ass$s <- as.data.frame(ronin_ass$s/3600)
+names(ronin_ass)[1] <- "walltime"
+
+data <- bind_rows(ronin_ass, tempclr, temphifi)
+data <- as.data.frame(rbind(ronin_ass, tempclr,temphifi))
+
+temp <- mutate(data, cores32 = as.numeric(walltime)*(as.numeric(num_cores)/32))
+```
+
+```{r}
+dat <- subset(data, prefix == "SRR99694")
+dat$depth <- as.factor(dat$depth)
+dat$rule_name <- as.factor(dat$rule_name)
+
+ggplot(dat, aes(x = depth, y = walltime)) +
+  geom_line()
+```
+
+missing11 <- ggplot(dat, aes(x=X2, y=X1, group=X5)) +
+  geom_line(aes(color=X5)) +
+  theme_bw() +
+  xlab("Read Depth") + 
+  colScale + 
+  theme(axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())+ 
+  expand_limits(y=c(min_missing,max_missing))
+
+```{r}
+hifi <- hifi_all_results
+hifi$num_cores <- as.numeric(hifi$num_cores)
+hifi$walltime <- as.numeric(hifi$walltime)
+hifi <- hifi %>% mutate(su = walltime * num_cores)
+
+temp <- sum(subset(hifi,rule_name == "pbindex")$su)
+temp <- temp + sum(subset(hifi,rule_name == "ccs")$su)
+temp <- temp + sum(subset(hifi,rule_name == "pbmerge")$su)
+temp <- temp + sum(subset(hifi,rule_name == "pbmerge_sample")$su)
+temp <- temp + (14707/(60*60)*48)
+Flye_hifi_11kb_50x_random_SU_hrs <- temp
+
+clr <- clr_all_results
+clr$num_cores <- as.numeric(clr$num_cores)
+clr$walltime <- as.numeric(clr$walltime)
+clr <- clr %>% mutate(su = walltime * num_cores)
+subset(clr,rule_name == "flye")
+Flye_clr_30kb_150x_random_SU_hrs <- 45334/(60*60)*48
+
+#Flye 150x random clr genome on ronin = 45334 seconds at 48 cores
+#Flye 50x srr99694 was done on ronin - 14707seconds and 48 cores
+
+
+        #          bbduk           bbduk_genome             bbmap_sort 
+        #              2                      1                      4 
+        #      benchcanu                  busco                    ccs 
+        #             50                     14                     40 
+        #  contig_length                   flye generate_coverage_list 
+        #             32                     24                      1 
+        #         gfa2fa          gt_ltrharvest                hifiasm 
+        #             40                     35                     43 
+        # hifiasm_mummer          hifiasm_quast             ltr_finder 
+        #             30                     15                     35 
+        #  ltr_retriever                 mummer                pbindex 
+        #             33                    120                      2 
+        #        pbmerge         pbmerge_sample                  quast 
+        #              2                      1                    106 
+        #       quastref         select_longest                  seqtk 
+        #            126                     27                     27 
+```
+
+
+Join together, format and add columns where necessary
+
+
+
+Graph job time for rule_names
+
+```{r}
+data <- hifi_results %>% 
+  filter(rule_name %in% c("flye", "wtdbg2","canu","hicanu")) %>%
+  subset(assembly_type == "chloroplast") %>%
+  subset(read_selection == "longest")
+
+ggplot(data=data, aes(x = depth, y=as.numeric(walltime_min), fill=rule_name)) +
+  geom_bar(stat="identity", position = "dodge") + 
+  labs(x = "Assembly read depth") +
+  labs(y = "Time in minutes") + 
+  labs(rule_name = "Assembly tool") +
+  labs(title = "Chloroplast assembly processing time")
+
+ggplot(data=data, aes(x = depth, y=as.numeric(total_time_min), fill=rule_name)) +
+  geom_bar(stat="identity", position = "dodge") + 
+  labs(x = "Assembly read depth") +
+  labs(y = "Time in minutes") + 
+  labs(rule_name = "Assembly tool") +
+  labs(title = "Chloroplast assembly submit to completion time")
+
+ggplot(data=data, aes(x = depth, y=as.numeric(max_memory), fill=rule_name)) +
+  geom_bar(stat="identity", position = "dodge") + 
+  labs(x = "Assembly read depth") +
+  labs(y = "Time in minutes") + 
+  labs(rule_name = "Assembly tool") +
+  labs(title = "Chloroplast assembly submit to completion time")
+
+data <- clr_results %>% 
+  filter(rule_name %in% c("flye", "raven","canu","wtdbg2")) %>%
+  subset(assembly_type == "genome") %>%
+  subset(read_selection == "longest")
+
+ggplot(data=data, aes(x = depth, y=as.numeric(total_time), fill=rule_name)) +
+  geom_bar(stat="identity", position = "dodge") + 
+  labs(x = "Assembly read depth") +
+  labs(y = "Time in hours") + 
+  labs(rule_name = "Assembly tool") +
+  labs(title = "Chloroplast assembly submit to completion time")
+
+data <- hifi_results %>% 
+  filter(rule_name %in% c( "hicanu","canu","hifiasm")) %>%
+  subset(assembly_type == "chloroplast") %>%
+  subset(read_selection == "random")
+
+ggplot(data=data, aes(x = depth, y=as.numeric(max_memory), fill=rule_name)) +
+  geom_bar(stat="identity", position = "dodge") + 
+  labs(x = "Assembly read depth") +
+  labs(y = "Max Memory in Mb") + 
+  labs(rule_name = "Assembly tool") +
+  labs(title = "Chloroplast assembly max memory usage") +
+  scale_y_log10()
+
+```
+
+
+
+

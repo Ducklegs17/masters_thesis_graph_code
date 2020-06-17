@@ -1,0 +1,578 @@
+---
+title: "Busco"
+author: "Chelsea Matthews"
+date: "11 May 2020"
+output: 
+  html_document:
+      code_folding: "show"
+      number_sections: TRUE
+      toc: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+											results = "asis",
+											message = FALSE, warning = FALSE,
+											error = FALSE)
+```
+
+Code for extracting busco data
+
+chelsea@Chelseas-Laptop:~/fast_dir/pacbio_hifi$ rsync -amv --ignore-existing --include ='/*/results/*/full_table.tsv' --exclude='first_failed_busco/' --exclude='*/results/run_poales_odb10/hmmer_output' --exclude='*/results/run_poales_odb10/busco_sequences' --exclude='*/results/run_poales_odb10/blast_output' --exclude='*/results/run_poales_odb10/augustus_output' --exclude='*/results/logs' --exclude='*/results/blast_db' --exclude='*/results/run_poales_odb10/short*' --exclude='*/results/run_poales_odb10/missing*' --exclude='*/results/short*' phoenix:/home/a1761942/fast_dir/pacbio_hifi/busco .
+
+Libraries
+
+```{r}
+library(plyr)
+library(tidyverse)
+library(ggplot2)
+library(grImport)
+library(XML)
+library(kableExtra)
+library(cluster)
+library(purrr)
+library(data.table)
+library(ggpubr)
+library(scales)
+library(viridis)
+library(dplyr)
+library(cowplot) 
+library(egg)
+library(fuzzyjoin)
+```
+
+
+Get file paths
+```{r}
+busco_hifi_path <- dir("../pacbio_hifi/busco", recursive=TRUE, full.names=TRUE, pattern="full_table.tsv$")
+
+busco_clr_path <- dir("../pacbio_clr/busco", recursive=TRUE, full.names=TRUE, pattern="full_table.tsv$")
+
+```
+
+HIFI DATA PROCESSING
+#make an empty list and fill it with data
+```{r}
+hifi <- vector(mode = "list", length = length(busco_hifi_path))
+
+#read in data
+for( i in 1:length(busco_hifi_path)) {
+  temp <- read.delim(busco_hifi_path[[i]], header=FALSE)
+  temp <- tail(temp,-3)
+  temp <- select(temp, V1,V2)
+  temp <- unique(temp)
+  temp <- select(temp, V2)
+  temp <- as.factor(temp$V2)
+  temp <- factor(temp)
+  hifi[[i]] <- as.data.frame(table(temp))
+  
+}
+
+names(hifi) <- busco_hifi_path
+
+```
+
+#Create four separate data frames, one each for complete, fragmented, fragmented and missing
+Add coverage, longest/random, sampleName, tool to each entry
+
+```{r}
+#create four dataframes 
+complete_h <- data.frame(matrix(NA, nrow=length(busco_hifi_path), ncol=5))
+duplicated_h <- data.frame(matrix(NA, nrow=length(busco_hifi_path), ncol=5))
+fragmented_h <- data.frame(matrix(NA, nrow=length(busco_hifi_path), ncol=5))
+missing_h <- data.frame(matrix(NA, nrow=length(busco_hifi_path), ncol=5))
+#all <- data.frame(matrix(NA, nrow=(length(busco_hifi_path)*4), ncol=8))
+
+for( i in 1:length(busco_hifi_path)) {
+  temp <- names(hifi[i])
+  temp <- unlist(strsplit(temp, '_'))
+  temp <- unlist(strsplit(temp,"/"))
+
+  depth <- temp[match("depth", temp) +1]
+  readselect <- temp[match("readselect", temp) +1]
+  prefix <- temp[match("prefix", temp) +1]
+  tool <- temp[match("assemblytool", temp) +1]
+    
+  complete_h[i,1] <- hifi[[i]][1,2]
+  complete_h[i,2] <- depth
+  complete_h[i,3] <- readselect
+  complete_h[i,4] <- prefix
+  complete_h[i,5] <- tool
+
+  duplicated_h[i,1] <- hifi[[i]][2,2]
+  duplicated_h[i,2] <- depth
+  duplicated_h[i,3] <- readselect
+  duplicated_h[i,4] <- prefix
+  duplicated_h[i,5] <- tool
+  
+  fragmented_h[i,1] <- hifi[[i]][3,2]
+  fragmented_h[i,2] <- depth
+  fragmented_h[i,3] <- readselect
+  fragmented_h[i,4] <- prefix
+  fragmented_h[i,5] <- tool  
+  
+  missing_h[i,1] <- hifi[[i]][4,2]
+  missing_h[i,2] <- depth
+  missing_h[i,3] <- readselect
+  missing_h[i,4] <- prefix
+  missing_h[i,5] <- tool
+  
+}
+
+
+complete_h$uniqueName <- paste0(complete_h$X4,"_",complete_h$X5,"_",complete_h$X3)
+duplicated_h$uniqueName <- paste0(duplicated_h$X4,"_",duplicated_h$X5,"_",duplicated_h$X3)
+fragmented_h$uniqueName <- paste0(fragmented_h$X4,"_",fragmented_h$X5,"_",fragmented_h$X3)
+missing_h$uniqueName <- paste0(missing_h$X4,"_",missing_h$X5,"_",missing_h$X3)
+```
+
+
+```{r}
+ggplot(fragmented_h, aes(x = uniqueName, X2, fill= X1)) + 
+  geom_tile() + 
+  theme_classic()
+```
+
+Shaping data for bar plots
+
+```{r}
+#Add new column to each of the existing dataframes
+complete_h$status <- "complete"
+missing_h$status <- "missing"
+duplicated_h$status <- "duplicated"
+fragmented_h$status <- "fragmented"
+
+#Add new name col
+complete_h$uniqueName2 <- paste0(complete_h$X4,"_",complete_h$X5,"_",complete_h$X3,"_",complete_h$X2)
+duplicated_h$uniqueName2 <- paste0(duplicated_h$X4,"_",duplicated_h$X5,"_",duplicated_h$X3, "_",duplicated_h$X2)
+fragmented_h$uniqueName2 <- paste0(fragmented_h$X4,"_",fragmented_h$X5,"_",fragmented_h$X3,"_",fragmented_h$X2)
+missing_h$uniqueName2 <- paste0(missing_h$X4,"_",missing_h$X5,"_",missing_h$X3,"_",missing_h$X2)
+
+#Add complete and fragmented together in the complete column
+complete_h$X1 <- complete_h$X1 + duplicated_h$X1
+
+all_hifi <- rbind(complete_h,duplicated_h,fragmented_h,missing_h)
+all_hifi$percent <- all_hifi$X1/4896
+```
+
+CLR DATA PROCESSING
+
+#make an empty list and fill it with data
+```{r}
+clr <- vector(mode = "list", length = length(busco_clr_path))
+
+#read in data
+for( i in 1:length(busco_clr_path)) {
+  temp <- read.delim(busco_clr_path[[i]], header=FALSE)
+  temp <- tail(temp,-3)
+  temp <- select(temp, V1,V2)
+  temp <- unique(temp)
+  temp <- select(temp, V2)
+  temp <- as.factor(temp$V2)
+  temp <- factor(temp)
+  clr[[i]] <- as.data.frame(table(temp))
+  
+}
+
+names(clr) <- busco_clr_path
+```
+
+#Create four separate data frames, one each for complete, fragmented, fragmented and missing
+Add coverage, longest/random, sampleName, tool to each entry.
+
+```{r}
+#create four dataframes 
+complete_c <- data.frame(matrix(NA, nrow=length(busco_clr_path), ncol=6))
+duplicated_c <- data.frame(matrix(NA, nrow=length(busco_clr_path), ncol=6))
+fragmented_c <- data.frame(matrix(NA, nrow=length(busco_clr_path), ncol=6))
+missing_c <- data.frame(matrix(NA, nrow=length(busco_clr_path), ncol=6))
+#all <- data.frame(matrix(NA, nrow=(length(busco_hifi_path)*4), ncol=8))
+
+for( i in 1:length(busco_clr_path)) {
+  temp <- names(clr[i])
+  temp <- unlist(strsplit(temp, '_'))
+  temp <- unlist(strsplit(temp,"/"))
+
+  depth <- temp[match("depth", temp) +1]
+  readselect <- temp[match("readselect", temp) +1]
+  prefix <- temp[match("prefix", temp) +1]
+  tool <- temp[match("assemblytool", temp) +1]
+  polishrnd <- temp[match("polishround", temp) +1]
+  
+    
+  complete_c[i,1] <- clr[[i]][1,2]
+  complete_c[i,2] <- depth
+  complete_c[i,3] <- readselect
+  complete_c[i,4] <- prefix
+  complete_c[i,5] <- tool 
+  complete_c[i,6] <- polishrnd 
+
+  duplicated_c[i,1] <- clr[[i]][2,2]
+  duplicated_c[i,2] <- depth
+  duplicated_c[i,3] <- readselect
+  duplicated_c[i,4] <- prefix
+  duplicated_c[i,5] <- tool
+  duplicated_c[i,6] <- polishrnd
+  
+  fragmented_c[i,1] <- clr[[i]][3,2]
+  fragmented_c[i,2] <- depth
+  fragmented_c[i,3] <- readselect
+  fragmented_c[i,4] <- prefix
+  fragmented_c[i,5] <- tool  
+  fragmented_c[i,6] <- polishrnd
+  
+  missing_c[i,1] <- clr[[i]][4,2]
+  missing_c[i,2] <- depth
+  missing_c[i,3] <- readselect
+  missing_c[i,4] <- prefix
+  missing_c[i,5] <- tool
+  missing_c[i,6] <- polishrnd
+}
+
+```
+
+#Create new column with unique names
+
+```{r}
+complete_c$uniqueName <- paste0(complete_c$X4,"_",complete_c$X5,"_",complete_c$X3,"_",complete_c$X6)
+duplicated_c$uniqueName <- paste0(duplicated_c$X4,"_",duplicated_c$X5,"_",duplicated_c$X3, "_", duplicated_c$X6)
+fragmented_c$uniqueName <- paste0(fragmented_c$X4,"_",fragmented_c$X5,"_",fragmented_c$X3, "_", fragmented_c$X6)
+missing_c$uniqueName <- paste0(missing_c$X4,"_",missing_c$X5,"_",missing_c$X3,"_",missing_c$X6)
+```
+
+
+```{r}
+ggplot(fragmented_c, aes(x = uniqueName, X2, fill= X1)) + 
+  geom_tile() + 
+  theme_classic()
+```
+
+Shaping data for bar plots
+
+```{r}
+#Add new column to each of the existing dataframes
+complete_c$status <- "complete"
+missing_c$status <- "missing"
+duplicated_c$status <- "duplicated"
+fragmented_c$status <- "fragmented"
+
+#Add new name col
+complete_c$uniqueName2 <- paste0(complete_c$X4,"_",complete_c$X5,"_",complete_c$X3,"_",complete_c$X2, "_", complete_c$X6)
+duplicated_c$uniqueName2 <- paste0(duplicated_c$X4,"_",duplicated_c$X5,"_",duplicated_c$X3, "_",duplicated_c$X2,"_", duplicated_c$X6)
+fragmented_c$uniqueName2 <- paste0(fragmented_c$X4,"_",fragmented_c$X5,"_",fragmented_c$X3,"_",fragmented_c$X2,"_", fragmented_c$X6)
+missing_c$uniqueName2 <- paste0(missing_c$X4,"_",missing_c$X5,"_",missing_c$X3,"_",missing_c$X2,"_",missing_c$X6)
+
+#Add complete and fragmented together in the complete column
+complete_c$X1 <- complete_c$X1 + fragmented_c$X1
+
+all_clr <- rbind(complete_c,duplicated_c,fragmented_c,missing_c)
+all_clr$percent <- all_clr$X1/4896
+
+all <- all_clr
+
+all <- all %>% 
+  mutate(assembly_type = X4)
+
+all$assembly_type <- str_replace(all$assembly_type, "SRR99694", "HiFi")
+all$assembly_type <- str_replace(all$assembly_type, "rice24kb", "HiFi")
+all$assembly_type <- str_replace(all$assembly_type, "m64015", "CLR")
+
+all$X2 <- factor(all$X2, levels = c("10","15","25","35","50","60","75","100","125","150"))
+
+```
+
+Filtering for polishing data
+
+```{r}
+assemblies <- c("m64015_canu_random_50_NA","m64015_canu_random_50_1","m64015_canu_random_50_2",
+                "m64015_flye_longest_125_NA","m64015_flye_longest_125_1","m64015_flye_longest_125_2",
+                "m64015_flye_random_50_NA","m64015_flye_random_50_1","m64015_flye_random_50_2",
+                "m64015_raven_longest_150_NA","m64015_raven_longest_150_1","m64015_raven_longest_150_2",
+                "m64015_raven_random_50_NA","m64015_raven_random_50_1","m64015_raven_random_50_2",
+                "m64015_wtdbg2_random_50_NA","m64015_wtdbg2_random_50_1","m64015_wtdbg2_random_50_2")
+
+polished <- subset(all, assembly_type == "CLR") %>%
+  subset(uniqueName2 %in% assemblies)
+
+#fill NA with 0s
+polished$X6[is.na(polished$X6)] <- 0
+#Add column for naming assemblies
+polished$polishname <- paste0(polished$X5, " ", polished$X2, "x\n", polished$X3)
+```
+
+
+#Line graphs 
+
+```{r}
+
+myColors <- c("orangered3","darkgoldenrod3","slateblue3","plum3","gray54","green4")
+
+names(myColors) <- c("canu","flye","hicanu","hifiasm","raven","wtdbg2")
+colScale <- scale_colour_manual(name = "Assembly Tool", values = myColors)
+
+min_complete <- 4000
+max_complete <- 4600
+
+dat <- subset(polished, status == "complete")
+
+comp <- ggplot(dat, aes(x=polishname, y=X1, group=X6)) +
+  geom_point(aes(color=X5, shape = X6), size = 3,
+             position = position_dodge(width = 0.6)) +
+  theme_bw() +
+  xlab("Read Depth") + 
+  colScale + 
+  ylab("Complete BUSCOs") + 
+    expand_limits(y=c(min_complete,max_complete)) +
+    scale_shape_manual(values = c("\u25CF","\u2460","\u2461"))
+
+#duplicated
+min_duplicated <- 40
+max_duplicated <- 150
+
+dat <- subset(polished, status == "duplicated")
+
+dups <- ggplot(dat, aes(x=polishname, y=X1, group=X6)) +
+  geom_point(aes(color=X5, shape = X6), size = 3,
+             position = position_dodge(width = 0.6)) +
+  theme_bw() +
+  xlab("Read Depth") + 
+  colScale + 
+  ylab("Duplicated BUSCOs") + 
+    expand_limits(y=c(min_duplicated,max_duplicated)) +
+    scale_shape_manual(values = c("\u25CF","\u2460","\u2461"))
+
+
+#Fragmented
+
+min_fragmented <- 50
+max_fragmented <- 250
+
+dat <- subset(polished, status == "fragmented")
+
+frag <- ggplot(dat, aes(x=polishname, y=X1, group=X6)) +
+  geom_point(aes(color=X5, shape = X6), size = 3,
+             position = position_dodge(width = 0.6)) +
+  theme_bw() +
+  xlab("Assembly") + 
+  colScale + 
+  ylab("Fragmented BUSCOs") + 
+    expand_limits(y=c(min_fragmented,max_fragmented)) +
+    scale_shape_manual(values = c("\u25CF","\u2460","\u2461"))
+
+#missing
+
+min_missing <- 0
+max_missing <- 1000
+
+dat <- subset(polished, status == "missing")
+
+miss <- ggplot(dat, aes(x=polishname, y=X1, group=X6)) +
+  geom_point(aes(color=X5, shape = X6), size = 3,
+             position = position_dodge(width = 0.6)) +
+  theme_bw() +
+  xlab("Assembly") + 
+  colScale + 
+  ylab("Missing BUSCOs") + 
+    expand_limits(y=c(min_missing,max_missing)) +
+    scale_shape_manual(values = c("\u25CF","\u2460","\u2461"))
+
+```
+
+```{r}
+
+
+legend <- get_legend(
+  miss + 
+    guides(color = guide_legend(nrow = 2),
+           shape = guide_legend(nrow = 3,
+                                title = "Polishing Round")) +
+    theme(legend.position = "bottom")
+  )
+
+topSpace <- 0.2
+bottomSpace <- 0.2
+rightSpace <- 0.2
+leftSpace <- 0.2
+
+myPlot <- egg::ggarrange(
+  comp + theme(legend.position="none",
+                      plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+               axis.ticks.x = element_blank(),
+               axis.title.x = element_blank(),
+               axis.text.x = element_blank()),
+  dups + theme(legend.position="none",
+                     plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+               axis.ticks.x = element_blank(),
+               axis.title.x = element_blank(),
+               axis.text.x = element_blank()),
+  frag + theme(legend.position="none",
+                     plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+               axis.text.x = element_text(angle = 45,
+                                   vjust = 0.65)),
+  miss + theme(legend.position="none",
+                     plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm"),
+                              axis.text.x = element_text(angle = 45,
+                                   vjust = 0.65)),
+  widths = c(0.5,0.5))
+
+endPlot <- plot_grid(myPlot, legend, nrow = 2, rel_heights = c(1, .16))
+
+ggsave("images/busco/busco_polished_scores.png",
+         width = 8,
+         height = 5,
+         dpi = 300)
+
+
+```
+
+Busco graphs for presentation
+
+```{r}
+min_complete <- 1650
+max_complete <- 4600
+
+dat <- subset(all, X3 == "random") %>%
+  subset(X4 == "m64015") %>%
+  subset(status == "complete")
+
+completeCLR <- ggplot(dat, aes(x=X2, y=X1, group=X5)) +
+  geom_line(aes(color=X5)) +
+  theme_bw() +
+  xlab("Read Depth") + 
+  colScale + 
+  ylab("Complete BUSCOs") + 
+    expand_limits(y=c(min_complete,max_complete)) + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank())
+
+dat <- subset(all, X3 == "random") %>%
+  subset(X4 == "SRR99694") %>%
+  subset(status == "complete")
+  
+complete11 <- ggplot(dat, aes(x=X2, y=X1, group=X5)) +
+  geom_line(aes(color=X5)) +
+  theme_bw() +
+  xlab("Read Depth") + 
+  colScale + 
+  theme(axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank())+ 
+  expand_limits(y=c(min_complete,max_complete))
+
+dat <- subset(all, X3 == "random") %>%
+  subset(X4 == "rice24kb") %>%
+  subset(status == "complete")
+
+complete24 <- ggplot(dat, aes(x=X2, y=X1, group=X5)) +
+  geom_line(aes(color=X5)) +
+  theme_bw() +
+  xlab("Read Depth") + 
+  colScale + 
+  theme(axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank()) + 
+  expand_limits(y=c(min_complete,max_complete))
+
+#duplicated
+min_duplicated <- 20
+max_duplicated <- 700
+
+dat <- subset(all, X3 == "random") %>%
+  subset(X4 == "m64015") %>%
+  subset(status == "duplicated")
+
+duplicatedCLR <- ggplot(dat, aes(x=X2, y=X1, group=X5)) +
+  geom_line(aes(color=X5)) +
+  theme_bw() +
+  xlab("Read Depth") + 
+  colScale + 
+  ylab("Duplicated BUSCOs") + 
+  expand_limits(y=c(min_duplicated,max_duplicated)) +
+  scale_y_log10()
+
+dat <- subset(all, X3 == "random") %>%
+  subset(X4 == "SRR99694") %>%
+  subset(status == "duplicated")
+  
+duplicated11 <- ggplot(dat, aes(x=X2, y=X1, group=X5)) +
+  geom_line(aes(color=X5)) +
+  theme_bw() +
+  xlab("Read Depth") + 
+  colScale + 
+  expand_limits(y=c(min_duplicated,max_duplicated)) +
+    scale_y_log10()+ 
+  theme(axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+
+dat <- subset(all, X3 == "random") %>%
+  subset(X4 == "rice24kb") %>%
+  subset(status == "duplicated")
+
+duplicated24 <- ggplot(dat, aes(x=X2, y=X1, group=X5)) +
+  geom_line(aes(color=X5)) +
+  theme_bw() +
+  xlab("Read Depth") + 
+  colScale + 
+  expand_limits(y=c(min_duplicated,max_duplicated)) +
+    scale_y_log10()+ 
+  theme(axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+
+myPlot <- egg::ggarrange(
+  completeCLR + theme(legend.position="none",
+                      plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  complete11 + theme(legend.position="none",
+                     plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  complete24 + theme(legend.position="none",
+                     plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")), 
+  duplicatedCLR + theme(legend.position="none"),
+  duplicated11 + theme(legend.position="none"),
+  duplicated24 + theme(legend.position="none"),
+  widths = c(0.39,0.31,0.36),
+  labels = c("          CLR","HiFi 11kb","HiFi 24kb","","",""),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+endPlot <- plot_grid(myPlot, nrow = 1, rel_heights = c(1))
+
+ggsave("images/busco/busco_complete_n_duplicated.png",
+         width = 7,
+         height = 4,
+         dpi = 300)
+
+myPlot <- egg::ggarrange(
+  fragmentedCLR + theme(legend.position="none",
+                      plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  fragmented11 + theme(legend.position="none",
+                     plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")),
+  fragmented24 + theme(legend.position="none",
+                     plot.margin = unit(c(topSpace, rightSpace, bottomSpace, leftSpace), "cm")), 
+  missingCLR + theme(legend.position="none"),
+  missing11 + theme(legend.position="none"),
+  missing24 + theme(legend.position="none"),
+  widths = c(0.39,0.31,0.36),
+  labels = c("          CLR","HiFi 11kb","HiFi 24kb","","",""),
+  label.args = list(gp=gpar(fontface = "plain", fontfamily = "Simplex Roman")))
+
+endPlot <- plot_grid(myPlot, nrow = 1, rel_heights = c(1))
+
+ggsave("images/busco/busco_fragmented_n_missing.png",
+         width = 7,
+         height = 4,
+         dpi = 300)
+
+endLeg <- plot_grid(legend, nrow = 1, rel_heights = c(1))
+
+ggsave("images/busco/legend.png",
+         width = 4,
+         height = 0.7,
+         dpi = 300)
+
+
+
+```
+
